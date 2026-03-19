@@ -1,0 +1,23 @@
+# Scrivai 项目配置示例
+# 复制此文件到项目根目录，并根据需要修改
+
+# LLM 配置（必须）
+llm:
+  model: "deepseek/deepseek-chat"  # litellm 模型标识
+  temperature: 0.7                  # 生成温度
+  max_tokens: 4096                  # 单次最大 token
+  api_base: null                    # 自定义 API 端点（可选）
+  # api_key 从 .env 读取，不在此处配置
+
+# 知识库配置（可选）
+knowledge:
+  db_path: "data/scrivai.db"        # SQLite 数据库路径
+  namespace: "default"               # 命名空间（项目隔离）
+
+# 生成引擎配置（可选）
+generation:
+  templates_dir: "templates/chapters"  # 章节模板目录
+
+# 审核引擎配置（可选）
+audit:
+  checkpoints_path: "config/checkpoints.yaml"  # 审核要点配置

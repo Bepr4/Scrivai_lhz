@@ -1,0 +1,19 @@
+# 集成测试项目配置
+# API Key 从 .env 读取 (LLM_API_KEY 或 API_KEY)
+
+llm:
+  model: "anthropic/glm-5"  # 实际值从 .env 的 MODEL_NAME 读取
+  temperature: 0.7
+  max_tokens: 1024
+  api_base: null  # 从 .env 的 BASE_URL 读取
+  # api_key 从 .env 读取
+
+knowledge:
+  db_path: "tests/fixtures/knowledge/test.db"
+  namespace: "integration_test"
+
+generation:
+  templates_dir: "tests/fixtures/templates"
+
+audit:
+  checkpoints_path: "tests/fixtures/checkpoints/substation_checkpoints.yaml"

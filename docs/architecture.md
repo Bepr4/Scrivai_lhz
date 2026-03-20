@@ -17,6 +17,8 @@
 ```
 ┌─────────────────────────────┐
 │      Project (入口)         │  ← 极简配置加载 + 组件组装
+│   .llm / .store / .gen /    │
+│   .ctx / .audit             │
 └──────────────┬──────────────┘
                │
         ┌──────┴──────┐
@@ -26,7 +28,12 @@
 │ Generation │  │    Audit     │
 └───────┬────┘  └────┬────────┘
         │             │
-┌───────┴─────────────┴───────┐
+┌───────┴───┐   ┌────┴───────┐
+│ 上下文工具 │   │            │  ← 独立的上下文管理组件
+│   Context │   │            │
+└───────┬───┘   └────────────┘
+        │
+┌───────┴─────────────────────┐
 │         LLM 调用层           │  ← 统一 LLM 封装（litellm）
 │        LLM Client           │
 └──────────────┬──────────────┘
@@ -56,16 +63,46 @@ class LLMClient:
 
 ## 4. Prompt 模板管理
 
-统一使用 Jinja2 管理所有 prompt 模板。
+统一使用 Jinja2 管理所有 prompt 模板，采用 **j2 + md 分离模式**。
 
-| 类型 | 用途 | 示例 |
+### 模板文件结构
+
+```
+templates/prompts/
+├── base.j2              # 基础骨架模板（包含 {{ prompt_content }} 变量）
+├── summarize.j2         # 摘要模板骨架
+├── summarize.md         # 摘要模板内容（实际指令）
+├── extract_terms.j2     # 术语提取骨架
+├── extract_terms.md     # 术语提取内容
+├── extract_references.j2
+├── extract_references.md
+├── audit.j2
+├── audit.md
+├── clean.j2
+└── clean.md
+```
+
+### j2 + md 分离模式
+
+每个 prompt 由两个文件组成：
+- **`.j2` 文件**：Jinja2 骨架模板，包含 `{{ prompt_content }}` 变量占位
+- **`.md` 文件**：实际的 prompt 指令内容
+
+加载时，`_load_template()` 函数将 `.md` 内容注入 `.j2` 骨架，生成完整 prompt。
+
+### 模板类型
+
+| 类型 | 用途 | 文件 |
 |------|------|------|
-| 章节生成模板 | 每章 spec 文件 | `templates/ch02_spec.md.j2` |
-| 审核要点模板 | checkpoint 判定 | `audit/checkpoints.yaml` 中内联 |
-| 摘要提取模板 | 前文摘要 | `templates/prompts/summarize.md.j2` |
-| 修正指令模板 | 审核后修正 | `templates/prompts/revise.md.j2` |
+| 摘要提取 | 前文摘要 | `summarize.j2` + `summarize.md` |
+| 术语提取 | 术语表构建 | `extract_terms.j2` + `extract_terms.md` |
+| 引用提取 | 交叉引用 | `extract_references.j2` + `extract_references.md` |
+| 审核 | checkpoint 判定 | `audit.j2` + `audit.md` |
+| 清洗 | 文档清洗 | `clean.j2` + `clean.md` |
 
-**章节生成模板变量**：
+### 章节生成模板变量
+
+用户自定义章节模板时，可使用以下变量：
 
 ```jinja2
 ## 工程概况
@@ -251,11 +288,23 @@ PDF / Word / 扫描件 → OCR → 清洗 → 结构化解析
 ```python
 class Project:
     def __init__(self, config_path: str):
-        self.llm = LLMClient(...)
-        self.store = KnowledgeStore(...)
-        self.gen = GenerationEngine(...)
-        self.audit = AuditEngine(...)
+        self.llm = LLMClient(...)           # LLM 客户端
+        self.store = KnowledgeStore(...)    # 知识库（可选）
+        self.gen = GenerationEngine(...)    # 生成引擎
+        self.ctx = GenerationContext(...)   # 上下文工具（独立组件）
+        self.audit = AuditEngine(...)       # 审核引擎
 ```
+
+**属性说明**：
+- `llm`: LLMClient，统一的 LLM 调用层
+- `store`: KnowledgeStore | None，知识库实例（配置中未指定则不初始化）
+- `gen`: GenerationEngine，章节生成引擎
+- `ctx`: GenerationContext，上下文管理工具（摘要、术语、引用提取）
+- `audit`: AuditEngine，文档审核引擎
+
+**环境变量**：
+- `LLM_API_KEY`：API 密钥（优先）
+- `API_KEY`：API 密钥（备选）
 
 ## 10. 不包含的内容
 
@@ -269,18 +318,33 @@ class Project:
 Scrivai/
 ├── core/
 │   ├── llm.py              # LLMClient
-│   ├── knowledge.py         # KnowledgeStore
+│   ├── knowledge/          # 知识库子包
+│   │   ├── __init__.py
+│   │   └── store.py        # KnowledgeStore, SearchResult
 │   ├── chunkers.py         # split_by_heading, split_by_clause
 │   ├── generation/
+│   │   ├── __init__.py
 │   │   ├── engine.py       # GenerationEngine
 │   │   └── context.py      # GenerationContext
 │   ├── audit/
+│   │   ├── __init__.py
 │   │   └── engine.py       # AuditEngine, AuditResult
 │   └── project.py          # Project
-├── templates/               # Jinja2 模板
+├── templates/
+│   └── prompts/            # Prompt 模板（j2 + md 分离）
+│       ├── base.j2         # 基础骨架模板
+│       ├── summarize.j2 / summarize.md
+│       ├── extract_terms.j2 / extract_terms.md
+│       ├── extract_references.j2 / extract_references.md
+│       ├── audit.j2 / audit.md
+│       └── clean.j2 / clean.md
 ├── utils/
-│   └── doc_pipeline.py     # 文档解析管道（旁路）
+│   ├── __init__.py
+│   └── doc_pipeline.py     # OCRAdapter, MarkdownCleaner, DocPipeline
 ├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
 ├── docs/
 │   ├── architecture.md
 │   ├── sdk_design.md

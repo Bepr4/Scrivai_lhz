@@ -77,10 +77,14 @@ split_by_clause(text, pattern)   # → list[Chunk]
 
 **单章生成**：
 ```python
-gen = GenerationEngine(llm, store)
+gen = GenerationEngine(llm, store=None)  # store 可选
 gen.generate_chapter(template, variables)  # → str
 # variables: user_inputs, retrieved_cases, previous_summary, glossary
 ```
+
+**参数说明**：
+- `llm`: LLMClient 实例（必传）
+- `store`: KnowledgeStore 实例（可选，传 None 时不进行案例检索）
 
 **上下文工具**（独立可用）：
 ```python
@@ -92,6 +96,17 @@ ctx.extract_references(text)           # → list[dict] (交叉引用)
 
 **典型用法**：
 ```python
+# 方式一：通过 Project 入口（推荐）
+proj = Project("config.yaml")
+glossary, summary = {}, ""
+for ch in chapters:
+    cases = proj.store.search(ch.topic, top_k=3) if proj.store else []
+    text = proj.gen.generate_chapter(ch.tpl, {"user_inputs": i, "retrieved_cases": cases, "previous_summary": summary, "glossary": glossary})
+    summary = proj.ctx.summarize(text)
+    glossary = proj.ctx.extract_terms(text, glossary)
+
+# 方式二：直接实例化各组件
+ctx = GenerationContext(llm)
 glossary, summary = {}, ""
 for ch in chapters:
     cases = store.search(ch.topic, top_k=3)
@@ -128,10 +143,24 @@ audit.load_checkpoints(path)          # 从 YAML 加载
 ### 2.6 Project
 
 极简入口：配置加载 + 组件组装
+
 ```python
 proj = Project("config.yaml")
-proj.llm / proj.store / proj.gen / proj.audit  # 暴露底层组件
+proj.llm      # LLMClient
+proj.store    # KnowledgeStore | None
+proj.gen      # GenerationEngine
+proj.ctx      # GenerationContext（独立组件）
+proj.audit    # AuditEngine
 ```
+
+**属性说明**：
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `llm` | LLMClient | LLM 调用客户端 |
+| `store` | KnowledgeStore \| None | 知识库实例（配置中未指定则不初始化） |
+| `gen` | GenerationEngine | 章节生成引擎 |
+| `ctx` | GenerationContext | 上下文工具（摘要、术语、引用提取） |
+| `audit` | AuditEngine | 文档审核引擎 |
 
 ---
 
@@ -140,17 +169,30 @@ proj.llm / proj.store / proj.gen / proj.audit  # 暴露底层组件
 ```
 core/
 ├── llm.py              # LLMClient
-├── knowledge.py        # KnowledgeStore
+├── knowledge/          # 知识库子包
+│   ├── __init__.py     # 导出 KnowledgeStore, SearchResult
+│   └── store.py        # KnowledgeStore 实现
 ├── chunkers.py         # split_by_heading, split_by_clause
 ├── generation/
+│   ├── __init__.py     # 导出 GenerationEngine, GenerationContext
 │   ├── engine.py       # GenerationEngine
 │   └── context.py      # GenerationContext
 ├── audit/
+│   ├── __init__.py     # 导出 AuditEngine, AuditResult
 │   └── engine.py       # AuditEngine, AuditResult
 └── project.py          # Project
 utils/
+├── __init__.py
 └── doc_pipeline.py     # OCRAdapter, MonkeyOCRAdapter, DoclingAdapter,
                         # MarkdownCleaner, DocPipeline, DocPipelineResult
+templates/
+└── prompts/            # Prompt 模板（j2 + md 分离）
+    ├── base.j2         # 基础骨架
+    ├── summarize.j2 / summarize.md
+    ├── extract_terms.j2 / extract_terms.md
+    ├── extract_references.j2 / extract_references.md
+    ├── audit.j2 / audit.md
+    └── clean.j2 / clean.md
 ```
 
 ---
@@ -234,7 +276,47 @@ if not result.warnings:
 
 ---
 
-## 5. qmd 依赖
+## 5. 模板加载机制
+
+SDK 内部使用 **j2 + md 分离模式** 管理 prompt 模板。
+
+### 5.1 模板结构
+
+每个 prompt 由两个文件组成：
+- **`.j2` 文件**：Jinja2 骨架模板，包含 `{{ prompt_content }}` 变量
+- **`.md` 文件**：实际的 prompt 指令内容
+
+```
+templates/prompts/
+├── base.j2              # 基础骨架
+├── summarize.j2         # 摘要骨架
+├── summarize.md         # 摘要指令
+└── ...
+```
+
+### 5.2 加载函数
+
+```python
+def _load_template(name: str) -> str:
+    """加载 prompt 模板，将 .md 内容注入 .j2 骨架"""
+    # 1. 读取 templates/prompts/{name}.j2
+    # 2. 读取 templates/prompts/{name}.md
+    # 3. 将 md 内容注入 j2 的 {{ prompt_content }} 变量
+    # 4. 返回完整 prompt
+```
+
+### 5.3 使用示例
+
+```python
+# 内部调用（用户通常不需要直接使用）
+from core.llm import _load_template
+
+prompt = _load_template("summarize")  # 加载 summarize.j2 + summarize.md
+```
+
+---
+
+## 6. qmd 依赖
 
 SDK 依赖 qmd 提供以下能力（如 qmd 尚未实现，需补充）：
 

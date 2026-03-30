@@ -63,7 +63,7 @@ class KnowledgeStore:
             self._store.index_document(self._namespace, file_path, text, metadata=meta)
             count += 1
 
-        self._store.embed_documents(self._db, self._llm_backend)
+        self._store.embed_documents(self._llm_backend)
         logger.debug("知识库添加 %d 条文档到 [%s]", count, self._namespace)
         return count
 

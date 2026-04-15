@@ -1,6 +1,18 @@
 # Scrivai 设计文档
 
-**日期**: 2026-04-15
+> **版本**: v3（2026-04-15）
+> **v2→v3 变更**（基于 Codex review + EvoSkill spike + docxtpl 探针）：
+> 1. pydantic/Protocol 集中在本项目 `scrivai/models/` 目录（单一真相）；design.md 不再内嵌代码。qmd 的类型通过 `from qmd import ...` 直接用，Scrivai re-export 以便 GovDoc 统一从 `scrivai` 拿
+> 2. **PES 阶段契约改为"强制文件化产物"**：plan→`working/plan.md`+`plan.json`；execute→`working/findings/<id>.json`；summarize→`working/output.json`。phase 间交互通过文件不靠 text
+> 3. **Workspace 从 symlink 改为内容快照**（`shutil.copytree`）+ 记录 skills/agents 的 git commit hash 到 `meta.json`；归档含完整可复现集；失败保留 resolve 所有 symlink
+> 4. **并发锁**：`WorkspaceManager.create` 加 `fcntl` 文件锁 + `WorkspaceSpec.force` 字段控制 run_id 冲突
+> 5. **Summarize 阶段 `allowed_tools` 收紧**至 `["Bash", "Read", "Write"]`（移除 Glob/Edit 避免发散）
+> 6. **新增 `build_qmd_client_from_config`** 工厂（业务层不再直接 `qmd.connect`）
+> 7. **新增通用 skill** `available-tools/SKILL.md`（CLI 命令 manifest）
+> 8. **EvolutionConfig 对齐 EvoSkill 真实 API**（spike 发现：scorer 签名 `(q,pred,gt)->float`；CSV dataset；硬编码 `.claude/skills/` 路径）
+> 9. **DocxRenderer 模板制作约束**：docxtpl 要求模板手工 Word 制作，不能程序化生成（详见 §4.3）
+
+**日期**: 2026-04-15（v3 更新）
 **项目**: Scrivai
 **本项目在系统中的定位**: 文档审核 / 生成的 **Claude Agent 编排框架**
 
@@ -93,115 +105,65 @@ Scrivai 对 qmd 的使用模式：
 
 ### 4.1 Agent 与 Workspace 核心模型
 
+**单一真相**：`Scrivai/scrivai/models/agent.py`（+ `workspace.py`）；从 `scrivai/__init__.py` 导出。
+
 ```python
-# scrivai.agent
-from pathlib import Path
-from typing import Any, Literal, Protocol
-from datetime import datetime
-from pydantic import BaseModel
-
-class ModelConfig(BaseModel):
-    model: str                          # "claude-sonnet-4-6" / "glm-5.1" / "minimax-2.7"
-    base_url: str | None = None
-    api_key: str | None = None
-    fallback_model: str | None = None
-
-class PhaseConfig(BaseModel):
-    name: Literal["plan", "execute", "summarize"]
-    max_turns: int
-    allowed_tools: list[str]            # ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill"]
-    permission_mode: Literal["bypassPermissions", "acceptEdits", "ask"] = "bypassPermissions"
-    additional_system_prompt: str = ""
-
-class AgentProfile(BaseModel):
-    name: str
-    display_name: str
-    prompt_text: str                    # base system prompt
-    phases: dict[str, PhaseConfig]      # 必含 "plan", "execute", "summarize"
-    skills_required: list[str] = []     # skill 名称列表（用于校验 workspace 中是否存在）
-
-class WorkspaceSpec(BaseModel):
-    run_id: str
-    project_root: Path                  # 业务项目根（必须含 skills/、agents/）
-    data_inputs: dict[str, Path]        # 名字 → 源路径（symlink 到 workspace/data/）
-    extra_env: dict[str, str] = {}
-
-class WorkspaceHandle(BaseModel):
-    run_id: str
-    root: Path
-    working_dir: Path                   # = root / "working"
-    data_dir: Path                      # = root / "data"
-    output_dir: Path                    # = root / "output"
-    logs_dir: Path                      # = root / "logs"
-    meta_path: Path                     # = root / "meta.json"
-
-class WorkspaceManager(Protocol):
-    def create(self, spec: WorkspaceSpec) -> WorkspaceHandle: ...
-    def archive(self, handle: WorkspaceHandle, *, success: bool) -> Path: ...
-    def cleanup_old(self, days: int = 30) -> int: ...
-
-class PhaseResult(BaseModel):
-    phase: Literal["plan", "execute", "summarize"]
-    text: str
-    turns: list[dict]                   # 完整 trajectory（含 tool_calls + tool_results）
-    usage: dict
-    error: str | None = None
-
-class AgentRunResult(BaseModel):
-    run_id: str
-    workspace_archive_path: Path | None
-    workspace_failed_path: Path | None
-    phases: list[PhaseResult]
-    final_output: str                   # = phases[-1].text
-    success: bool
-    total_usage: dict
-
-class AgentSession(Protocol):
-    async def run(
-        self,
-        *,
-        agent: AgentProfile,
-        model: ModelConfig,
-        workspace: WorkspaceHandle,
-        task_prompt: str,
-        phase_inputs: dict[str, dict] = {},
-    ) -> AgentRunResult: ...
-
-def build_agent_session() -> AgentSession: ...
-def build_workspace_manager(workspaces_root: Path | None = None,
-                            archives_root: Path | None = None) -> WorkspaceManager: ...
+# 所有 pydantic/Protocol 从 scrivai 直接导入
+from scrivai import (
+    ModelConfig, PhaseConfig, AgentProfile,
+    WorkspaceSpec, WorkspaceSnapshot, WorkspaceHandle, WorkspaceManager,
+    PhaseResult, AgentRunResult, AgentSession,
+    # 工厂函数
+    build_agent_session, build_workspace_manager,
+    build_qmd_client_from_config,   # v3 新增：业务层不再直接 import qmd
+)
+# qmd 类型：Scrivai re-export 方便下游一站式 import
+from scrivai import ChunkRef, SearchResult, CollectionInfo  # 实际来自 qmd，Scrivai 转发
 ```
+
+**v3 关键字段说明**（详见 contracts 源码）：
+- `WorkspaceSpec.force: bool`（v3 新增）：run_id 冲突时，`True` 覆盖原 workspace，`False` 抛 `WorkspaceError`
+- `WorkspaceSnapshot`（v3 新增）：记录快照时的 `skills_git_hash / agents_git_hash / snapshot_at`，写入 workspace 的 `meta.json`
+- `WorkspaceHandle.snapshot: WorkspaceSnapshot`（v3 新增）
+- `PhaseResult.produced_files: list[str]`（v3 新增）：该 phase 写入 workspace 的文件清单（相对 `working_dir`）
+- `AgentRunResult.final_output_path: Path | None`（v3 新增）：summarize 产出的 `working/output.json` 绝对路径；业务层**应优先读此文件**，`final_output` 字符串字段保留向后兼容
+
+### 4.1.1 PES 流程语义（v3 文件化契约）
+
+`AgentSession.run` 顺序执行 plan → execute → summarize 三个 phase。**v3 变更**：三 phase 通过 workspace 内的约定文件交互，**不再依赖** `phase.text` 字符串拼接——避免 plan 阶段的工具调用 / 内部状态在 text 摘要中丢失。
+
+**Plan**
+- `query()` 无状态调用，输入：`task_prompt + phase_inputs.get("plan", {})`
+- **必需产物**：`working/plan.md`（人类可读策略）+ `working/plan.json`（机器可读执行清单，结构由业务 agent 定义）
+- system_prompt **强制要求**："你必须在结束前用 Write 工具写入 `working/plan.md` 和 `working/plan.json`"
+- `PhaseResult.produced_files` 必含 `"plan.md"` 和 `"plan.json"`；缺失则 phase 失败（`error="required output file missing: ..."`）
+
+**Execute**
+- `query()` 无状态调用
+- system_prompt **明确指示**："读 `working/plan.md` 和 `working/plan.json` 作为起点；按清单逐项执行"
+- **必需产物**：`working/findings/<item_id>.json`——plan.json 指定的每个 item 一个文件
+- agent 自主用 Bash 调 CLI 检索、读文件、写 findings
+- `PhaseResult.produced_files` 至少含一个 `findings/*.json`
+
+**Summarize**
+- `query()` 无状态调用
+- system_prompt 指示："读 `working/findings/*.json`（用 Bash `ls working/findings/`），聚合成 `working/output.json`"
+- **必需产物**：`working/output.json`——**唯一**最终结构化输出，结构由业务层 task_prompt 明确约束
+- `allowed_tools` **收紧**到 `["Bash", "Read", "Write"]`（无 Edit/Glob/Grep，避免发散重检索）
+- `AgentRunResult.final_output_path = workspace.working_dir / "output.json"`
+
+**错误处理**：每 phase 结束后 Scrivai 校验 `produced_files` 完整性；任一必需文件缺失 → 中断后续 phase，`success=False`。
 
 ### 4.2 Knowledge 层（Python API + CLI 包装）
 
+**单一真相**：`Scrivai/scrivai/models/knowledge.py` + `Scrivai/scrivai/knowledge/*.py`
+
 ```python
-# scrivai.knowledge
-from pydantic import BaseModel
-from typing import Protocol
-from qmd import QmdClient, SearchResult
-
-class LibraryEntry(BaseModel):
-    entry_id: str
-    title: str
-    source_path: str
-    markdown_path: str
-    metadata: dict = {}
-
-class Library(Protocol):
-    collection_name: str
-    def add(self, entry_id: str, markdown: str, metadata: dict | None = None,
-            *, source_path: str | None = None, title: str | None = None) -> LibraryEntry: ...
-    def get(self, entry_id: str) -> LibraryEntry: ...
-    def list(self, filters: dict | None = None) -> list[LibraryEntry]: ...
-    def delete(self, entry_id: str) -> None: ...
-    def search(self, query: str, *, top_k: int = 5,
-               filters: dict | None = None) -> list[SearchResult]: ...
-
-class RuleLibrary(Library): ...
-class CaseLibrary(Library): ...
-class TemplateLibrary(Library): ...
-
-def build_libraries(qmd_client: QmdClient) -> tuple[RuleLibrary, CaseLibrary, TemplateLibrary]: ...
+from scrivai import (
+    LibraryEntry, Library,               # pydantic + Protocol
+    RuleLibrary, CaseLibrary, TemplateLibrary,  # 具体实现，对应固定 collection 名
+    build_libraries,                     # 工厂
+)
 ```
 
 **持久化策略**：LibraryEntry 元数据完全持久化在 qmd chunk metadata；不维护内存状态。
@@ -220,6 +182,13 @@ class DocxRenderer:
     def render(self, context: dict, output_path: str | Path) -> None: ...
     def list_placeholders(self) -> list[str]: ...
 ```
+
+**v3 模板制作约束**（依 2026-04-15 docxtpl 探针；详见 `INTEGRATION_ISSUES.md` ISSUE-002）：
+
+1. **模板必须由 Word/LibreOffice 手工制作**——不能用 python-docx 程序化生成。程序化生成容易把 jinja 标签（`{%tr for %}`）拆到多个 XML `<w:r>` 中导致 docxtpl 解析失败
+2. **单 cell 内不支持嵌套 `{% for %}`**——用 jinja2 过滤器（如 `{{ items | join('; ') }}`）扁平化
+3. **避免表中表（nested tables）**——docxtpl 不自动展开子表
+4. **退路**：若 docxtpl 不够用，直接 `python-docx` 手写渲染器；`DocxRenderer` 公共 API 不变，仅换底层实现。记入风险登记，M1 不做
 
 ### 4.4 CLI 命令规范
 
@@ -267,7 +236,7 @@ CLI 子命令的 JSON 输出 schema 在契约测试中和对应 Python API `.mod
 
 ### 4.6 通用 Skill 包（Scrivai/skills/）
 
-Scrivai 提供三个**通用 skill**，作为业务层 skill 的"基类"。业务层可在自己的 skills/ 里**同名覆盖**或**追加新 skill**。
+Scrivai 提供四个**通用 skill**（v3 新增 `available-tools`），作为业务层 skill 的"基类"。业务层可在自己的 skills/ 里**同名覆盖**或**追加新 skill**。
 
 ```
 Scrivai/skills/
@@ -276,9 +245,13 @@ Scrivai/skills/
 │   └── (assets/)
 ├── inspect-document/
 │   └── SKILL.md
-└── render-output/
+├── render-output/
+│   └── SKILL.md
+└── available-tools/               ← v3 新增：CLI 命令 manifest
     └── SKILL.md
 ```
+
+**`available-tools/SKILL.md`** 的作用：枚举 `scrivai-cli / qmd / govdoc-cli` 所有子命令的参数、输出 JSON shape、典型错误。agent 在任何 phase 都可 `Read .claude/skills/available-tools/SKILL.md` 作为**权威命令参考**——避免 prompt 漂移导致 agent 瞎调命令。业务 agent 的 `skills_required` 默认应含此 skill。
 
 **SKILL.md 标准格式**（Anthropic skill 约定）：
 
@@ -374,13 +347,15 @@ phases:
   summarize:
     name: summarize
     max_turns: 4
-    allowed_tools: ["Bash", "Read", "Write", "Glob"]
+    allowed_tools: ["Bash", "Read", "Write"]   # v3：收紧，无 Glob/Edit
     additional_system_prompt: |
-      Read all working/findings/*.md, compile into a single JSON object
-      matching the schema given in task_prompt. Write to working/output.json
-      and respond with the JSON content as your final message.
+      Read all working/findings/*.json (use `ls working/findings/` via Bash),
+      compile into a single JSON object matching the schema given in task_prompt.
+      Write to working/output.json and respond with the JSON content as your
+      final message.
 
 skills_required:
+  - available-tools       # v3：默认必含
   - search-knowledge
   - inspect-document
 ```
@@ -395,34 +370,40 @@ from typing import Protocol
 from pydantic import BaseModel
 from scrivai.agent import AgentRunResult, ModelConfig
 
-class Evaluator(Protocol):
-    def evaluate(self, run_result: AgentRunResult, golden: dict) -> float: ...
+**单一真相**：`Scrivai/scrivai/models/evolution.py` + `Scrivai/scrivai/evolution/*.py`
+**对齐依据**：2026-04-15 EvoSkill spike（详见 `INTEGRATION_ISSUES.md` ISSUE-001 / ISSUE-003）
 
-class EvolutionConfig(BaseModel):
-    project_root: Path
-    skills_dir: Path                    # 默认 project_root / "skills"
-    eval_dataset_path: Path             # JSON: list[{"task": ..., "golden": ...}]
-    base_branch: str = "main"
-    frontier_size: int = 5
-    proposer_model: ModelConfig
+```python
+from scrivai import Evaluator, EvolutionConfig, EvolutionRun, run_evolution
 
-class EvolutionRun(BaseModel):
-    started_at: datetime
-    base_skill_hash: str
-    candidates: list[dict]              # [{"branch": "evo/...", "score": 0.87, "diff": "..."}]
-    promoted_branch: str | None         # 最高分超过 base 的候选分支名（建议人工 PR 合并）
-
-def run_evolution(config: EvolutionConfig, evaluator: Evaluator) -> EvolutionRun: ...
+# Evaluator 签名（对齐 EvoSkill scorer 协议）：
+#   def __call__(question: str, predicted: str, ground_truth: str) -> float
 ```
+
+**v3 关键变更（依 spike 发现）**：
+- `Evaluator` 签名从 `(run_result, golden) -> float` 改为 **EvoSkill 原生** `(question, predicted, ground_truth) -> float`——业务层从 `AgentRunResult.final_output_path` 读 predicted，从 golden 序列化 ground_truth
+- `EvolutionConfig.eval_dataset_path` 改为 `eval_dataset_csv`——EvoSkill 要求 CSV 格式（`question / ground_truth / category` 三列必需）
+- 新增字段：`task_name / model / mode / max_iterations / no_improvement_limit / concurrency / train_ratio / val_ratio / tolerance / selection_strategy / cache_enabled / cache_dir`
+- 删除字段：`skills_dir`（EvoSkill **硬编码** `cwd/.claude/skills/`）、`base_branch`（EvoSkill 隐式 `main`）、`proposer_model`（EvoSkill 用 `LoopAgents` 内部管理）
+
+**⚠️ 集成准备：Skills 路径兼容**
+
+EvoSkill 硬编码读写 `project_root/.claude/skills/`。但本项目 v3 设计规定 skills 源位于 `project_root/skills/`（非 `.claude/`）。**M2 接入 EvoSkill 前业务层必须选一方案**：
+
+| 方案 | 做法 | 推荐度 |
+|---|---|---|
+| **A**（推荐） | 在业务项目根建 git 追踪的 symlink `<project>/.claude/skills -> ../skills`——EvoSkill 透过 symlink 读写，实际落在 `skills/`；git diff 显示在 `.claude/skills/` 但真实改动在 `skills/` | ⭐ 推荐 |
+| B | 把源 skills 迁到 `.claude/skills/`——与 EvoSkill 原生兼容，但违背"不放 .claude/"指示 | 不推荐 |
+| C | 推迟 EvoSkill 到 M3，M2 手写 skill 迭代 | 下策 |
 
 **进化机制（5 阶段，参考 EvoSkill 论文）**：
 1. **Base run**：当前 main 上的 skill 跑 eval_dataset，记录每条任务的 trajectory + score
-2. **Proposer**：proposer_model 分析失败/低分 trajectory，提议对哪些 SKILL.md 做什么修改
-3. **Generator**：把每个提议生成具体的 SKILL.md 修改，写到 git 分支 `evo/<timestamp>-<idx>`
-4. **Evaluator**：每个分支跑评测集 → 业务层提供的 `Evaluator.evaluate` 打分
-5. **Frontier**：留 top-N 分支；若最高分 > base 则在 `promoted_branch` 给出建议合并的分支名
+2. **Proposer**：用 `model` 参数指定的模型分析失败 trajectory，提议修改
+3. **Generator**：生成具体 SKILL.md 修改，写到 git 分支 `evo/<timestamp>-<idx>`
+4. **Evaluator**：每分支跑评测集 → `Evaluator(question, predicted, ground_truth)` 打分
+5. **Frontier**：留 top-N 分支；最高分超过 base 时填入 `promoted_branch`
 
-**安全性**：进化产物**永远不直接覆盖 main**；只到 git 分支。人工审核 + PR + 跑回归测试后才合并到 main。
+**安全性**：进化产物**永不直接覆盖 main**；只到 git 分支。人工审核 + PR + 跑回归测试后才合并 main。
 
 ## 5. 内部架构
 
@@ -547,57 +528,116 @@ class _AgentSession:
         return AgentRunResult(...)
 ```
 
-### 5.2 WorkspaceManager 实现要点
+### 5.2 WorkspaceManager 实现要点（v3 快照 + 锁）
 
 ```python
-# scrivai/agent/workspace.py（伪代码）
+# scrivai/agent/workspace.py
+import fcntl, shutil, subprocess, json, tarfile, time
+from datetime import datetime, timezone
+from pathlib import Path
+
 class _WorkspaceManager:
+    def __init__(self, workspaces_root, archives_root):
+        self.workspaces_root = Path(workspaces_root)
+        self.archives_root = Path(archives_root)
+        self.workspaces_root.mkdir(parents=True, exist_ok=True)
+        self.archives_root.mkdir(parents=True, exist_ok=True)
+
+    def _git_hash(self, path: Path) -> str | None:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return r.stdout.strip() if r.returncode == 0 else None
+        except Exception:
+            return None
+
     def create(self, spec):
         root = self.workspaces_root / spec.run_id
-        working = root / "working"
-        data = root / "data"
-        output = root / "output"
-        logs = root / "logs"
+        lock_path = self.workspaces_root / f".{spec.run_id}.lock"
+        lock_fd = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise WorkspaceError(f"workspace {spec.run_id} is locked")
 
-        for d in (working, data, output, logs):
-            d.mkdir(parents=True, exist_ok=True)
+        try:
+            if root.exists():
+                if not spec.force:
+                    raise WorkspaceError(
+                        f"workspace already exists: {root}; set WorkspaceSpec.force=True to overwrite"
+                    )
+                shutil.rmtree(root)
 
-        # symlink skills 和 agents 到 working/.claude/
-        claude_dir = working / ".claude"
-        claude_dir.mkdir(exist_ok=True)
-        (claude_dir / "skills").symlink_to(spec.project_root / "skills",
-                                           target_is_directory=True)
-        if (spec.project_root / "agents").exists():
-            (claude_dir / "agents").symlink_to(spec.project_root / "agents",
-                                               target_is_directory=True)
+            working = root / "working"; data = root / "data"
+            output = root / "output"; logs = root / "logs"
+            for d in (working, data, output, logs):
+                d.mkdir(parents=True, exist_ok=True)
 
-        # symlink data_inputs
-        for name, src in spec.data_inputs.items():
-            (data / name).symlink_to(src.resolve())
+            # 内容快照（v3：不再 symlink）
+            claude_dir = working / ".claude"
+            claude_dir.mkdir(exist_ok=True)
+            src_skills = spec.project_root / "skills"
+            if src_skills.exists():
+                shutil.copytree(src_skills, claude_dir / "skills", symlinks=False)
+            src_agents = spec.project_root / "agents"
+            if src_agents.exists():
+                shutil.copytree(src_agents, claude_dir / "agents", symlinks=False)
 
-        # 写 meta.json
-        meta = {
-            "run_id": spec.run_id,
-            "created_at": datetime.utcnow().isoformat(),
-            "project_root": str(spec.project_root.resolve()),
-            "data_inputs": {k: str(v) for k, v in spec.data_inputs.items()},
-            "extra_env": spec.extra_env,
-        }
-        (root / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+            # data_inputs 也复制（跨机归档可用）
+            for name, src in spec.data_inputs.items():
+                dst = data / name
+                if src.is_dir():
+                    shutil.copytree(src, dst, symlinks=False)
+                else:
+                    shutil.copy2(src, dst)
 
-        return WorkspaceHandle(...)
+            # snapshot 元信息
+            snapshot = WorkspaceSnapshot(
+                skills_git_hash=self._git_hash(spec.project_root),
+                agents_git_hash=self._git_hash(spec.project_root),
+                snapshot_at=datetime.now(timezone.utc).isoformat(),
+            )
+            meta = {
+                "run_id": spec.run_id,
+                "created_at": snapshot.snapshot_at,
+                "project_root": str(spec.project_root.resolve()),
+                "data_inputs": {k: str(v) for k, v in spec.data_inputs.items()},
+                "extra_env": spec.extra_env,
+                "snapshot": snapshot.model_dump(),
+            }
+            (root / "meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2)
+            )
+
+            return WorkspaceHandle(
+                run_id=spec.run_id, root=root, working_dir=working,
+                data_dir=data, output_dir=output, logs_dir=logs,
+                meta_path=root / "meta.json", snapshot=snapshot,
+            )
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+            try: lock_path.unlink()
+            except FileNotFoundError: pass
 
     def archive(self, handle, *, success):
         if success:
             archive_path = self.archives_root / f"{handle.run_id}.tar.gz"
             with tarfile.open(archive_path, "w:gz") as tar:
+                # 完整可复现集：skills 快照 + data + output + logs + meta
+                tar.add(handle.working_dir / ".claude", arcname="snapshot/.claude")
+                tar.add(handle.data_dir, arcname="snapshot/data")
                 tar.add(handle.output_dir, arcname="output")
                 tar.add(handle.logs_dir, arcname="logs")
                 tar.add(handle.meta_path, arcname="meta.json")
             shutil.rmtree(handle.root)
             return archive_path
         else:
-            (handle.root / ".failed").write_text(datetime.utcnow().isoformat())
+            (handle.root / ".failed").write_text(
+                datetime.now(timezone.utc).isoformat()
+            )
             return handle.root
 
     def cleanup_old(self, days=30):
@@ -606,32 +646,49 @@ class _WorkspaceManager:
         for p in self.archives_root.glob("*.tar.gz"):
             if p.stat().st_mtime < cutoff:
                 p.unlink(); count += 1
-        for p in self.workspaces_root.glob("*/.failed"):
-            ws = p.parent
-            if p.stat().st_mtime < cutoff:
+        for failed_marker in self.workspaces_root.glob("*/.failed"):
+            ws = failed_marker.parent
+            if failed_marker.stat().st_mtime < cutoff:
                 shutil.rmtree(ws); count += 1
         return count
 ```
 
-### 5.3 Skills/Agents 装入：Symlink 而非 Copy
+### 5.3 Skills/Agents 装入：Snapshot 而非 Symlink（v3 变更）
 
-**理由**：业务侧的 skills/ 是"长期沉淀的资产"，会被 EvoSkill 不断进化；workspace 用 symlink 让每次运行自动看到最新版本，进化成果可累计。EvoSkill 的进化候选写到 git 分支（不直接改 main 上的文件），所以不会污染运行中的 workspace（运行中读的是 main 分支的文件）。
+**v2 做法（已废弃）**：symlink `project_root/skills → workspace/.claude/skills`
+**v3 做法**：`shutil.copytree(symlinks=False)` 内容快照 + 记录 `skills_git_hash / agents_git_hash` 到 `meta.json`
 
-注意事项：
-- `WorkspaceManager.create` 必须用绝对路径 symlink（`src.resolve()`），避免 cwd 变化导致悬空
-- Windows 上 symlink 受限 → MVP 只支持 Linux/macOS
+**为什么改**：
+- symlink 下，运行中若 main 分支被改（如合并 EvoSkill 候选）会**立刻污染**正在跑的 run
+- symlink 归档后指向源路径，跨机失效，**无法复盘**
+- 快照让每次运行获得瞬间的**不可变**依赖集
+
+**代价**：
+- 磁盘：每次快照 ~几 MB（skills + agents），可接受
+- 创建速度：仍 P95 < 300ms
+
+**好处**：
+- 运行对源变更**免疫**
+- 归档可跨机复盘
+- EvoSkill 合并 main 分支**不污染**运行中的 run
+- `meta.json.snapshot` 可追溯使用的是哪个 git hash 的 skill
 
 ## 6. 与 GovDoc / qmd 的协调点
 
 ### 6.1 GovDoc 怎么用 Scrivai
 
 ```python
-# 业务层（GovDoc-Auditor）伪代码
-from scrivai.agent import (
+# 业务层（GovDoc-Auditor）伪代码 — v3
+from scrivai import (
+    ModelConfig, WorkspaceSpec,   # pydantic（从 Scrivai 统一导入）
     build_agent_session, build_workspace_manager,
-    AgentProfile, ModelConfig, WorkspaceSpec,
+    build_qmd_client_from_config,   # v3：业务层不直接 import qmd
+    build_libraries,
+    load_agent_profile,             # from scrivai.agent.profile re-export
 )
-from scrivai.agent.profile import load_agent_profile
+
+qmd = build_qmd_client_from_config(cfg.qmd.db_path)   # ← 不再 qmd.connect
+rules, cases, templates = build_libraries(qmd)
 
 # 业务 agent 在 GovDoc/agents/gov-auditor.yaml
 agent = load_agent_profile(Path("GovDoc-Auditor/agents/gov-auditor.yaml"))

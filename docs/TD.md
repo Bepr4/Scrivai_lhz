@@ -1,9 +1,10 @@
 # Scrivai 任务分解（Task Document）
 
-**依据**: `design.md` + `/home/iomgaa/Projects/GOVDOC_PROGRAM_PLAN.md`
-**开发分支**: `feat/m0-agent-sdk-switch`
+> **版本**: v3（2026-04-15）
+> **v2→v3 变更**：T0.2 统一 pydantic 集中在 `scrivai/models/`；T0.3 改为快照+锁实现；新增 T0.8b（available-tools skill）、T1.0（`build_qmd_client_from_config`）；EvolutionConfig 对齐 EvoSkill 真实 API。**无外部 contracts 依赖**：Scrivai 自包含，qmd 类型经 `from qmd import ...` 用并 re-export。
 
-> 范式更新（2026-04-15）：废除 LLMClient + Chain；切换为 Claude Agent SDK + Workspace + PES + Skill。本 TD 与上一版完全替代。
+**依据**: `design.md` + `/home/iomgaa/Projects/GOVDOC_PROGRAM_PLAN.md`
+**开发分支**: `feat/v3-p0-cleanup`
 
 ---
 
@@ -29,32 +30,40 @@
 - **契约测试挂钩**: `tests/contract/test_public_api.py::test_import_surface`
 - **估时**: 0.5d
 
-### T0.2 `scrivai.agent` — pydantic 模型 + Protocol
+### T0.2 `scrivai.models` — pydantic + Protocol 集中（v3 调整）
 - **DoD**:
-  - `agent/profile.py`: `ModelConfig, PhaseConfig, AgentProfile` pydantic + YAML 加载 `load_agent_profile(path)`
-  - `agent/workspace.py`: `WorkspaceSpec, WorkspaceHandle, WorkspaceManager` Protocol
-  - `agent/session.py`: `PhaseResult, AgentRunResult, AgentSession` Protocol
-  - `agent/exceptions.py`: `WorkspaceError, AgentRunError`
-  - 字节级匹配 design.md §4.1
+  - `scrivai/models/agent.py`: `ModelConfig, PhaseConfig, AgentProfile, PhaseResult, AgentRunResult, AgentSession`（Protocol）
+  - `scrivai/models/workspace.py`: `WorkspaceSpec, WorkspaceSnapshot, WorkspaceHandle, WorkspaceManager`（Protocol）
+  - `scrivai/models/knowledge.py`: `LibraryEntry, Library`
+  - `scrivai/models/evolution.py`: `Evaluator, EvolutionConfig, EvolutionRun`
+  - `scrivai/__init__.py` 顶层暴露所有 pydantic + Protocol + 工厂；同时 **re-export qmd 类型**：`from qmd import ChunkRef, SearchResult, CollectionInfo` 转发
   - mypy 通过
 - **依赖**: T0.1
 - **优先级**: P0
-- **契约测试挂钩**: `tests/contract/test_models.py`
+- **契约测试挂钩**: `tests/contract/test_models.py`、`tests/contract/test_reexport.py`（验证 `scrivai.ChunkRef is qmd.ChunkRef`）
 - **估时**: 1d
 
-### T0.3 `WorkspaceManager` 真实实现
+### T0.3 `WorkspaceManager` 真实实现（v3：快照 + 锁）
 - **DoD**:
-  - `_WorkspaceManager` 实现 design.md §5.2 伪代码
-  - `create`: 目录树 + symlink skills/agents/data + 写 meta.json
-  - `archive(success=True)`: 打包 output+logs+meta 到 archives_root，删原 workspace
-  - `archive(success=False)`: 写 .failed 标记
-  - `cleanup_old`: 同时清 archives 和 failed workspace
-  - 契约测试覆盖 design.md §4.5 不变量 1-4
-  - 跨平台符号链接（仅 Linux/macOS）
+  - 按 design.md §5.2 新版伪代码实现：
+    - `shutil.copytree(symlinks=False)` 做内容快照（**不再** symlink）
+    - `fcntl` 文件锁防并发撞 run_id
+    - `WorkspaceSpec.force` 字段：默认 reject，True 覆盖
+    - `WorkspaceSnapshot`（git hash）写入 `meta.json`
+    - `archive(success=True)` 打包**完整可复现集**：`snapshot/.claude` + `snapshot/data` + `output` + `logs` + `meta.json`
+    - `archive(success=False)` 写 `.failed` 标记
+    - `cleanup_old` 同时清 archives 和 failed workspace
+  - 契约测试：
+    - `test_concurrent_create_rejected`（两进程同时 create 同 run_id）
+    - `test_force_recreate`
+    - `test_snapshot_preserves_skills`（源修改后 workspace 不变）
+    - `test_archive_portability`（归档拷到 `/tmp` 解压能读 meta.json + snapshot）
+    - design.md §4.5 不变量 1-4
+  - Linux/macOS（Windows 后续）
 - **依赖**: T0.2
 - **优先级**: P0
 - **契约测试挂钩**: `tests/contract/test_workspace.py`
-- **估时**: 1.5d
+- **估时**: 2d（v3 扩大 +0.5d）
 
 ### T0.4 `MockAgentSession`（`scrivai.testing.mock_agent`）
 - **DoD**:
@@ -107,10 +116,19 @@
   - `skills/search-knowledge/SKILL.md`、`skills/inspect-document/SKILL.md`、`skills/render-output/SKILL.md`
   - 每份按 design.md §4.6 标准格式（YAML frontmatter + Markdown body）
   - 明确列出对应 CLI 命令的调用方式 / 输出 JSON 结构 / Tips
-  - 通过 mock workspace 验证 SKILL.md 文件能被 symlink 正确装入 working/.claude/skills/
+  - 通过 mock workspace 验证 SKILL.md **经快照复制**到 `working/.claude/skills/`（v3：不再 symlink）
 - **依赖**: T0.3, T0.7
 - **优先级**: P0
 - **估时**: 1d
+
+### T0.8b available-tools skill（v3 新增）
+- **DoD**:
+  - `Scrivai/skills/available-tools/SKILL.md` 枚举 `scrivai-cli` + `qmd` 每个子命令
+  - 每命令含：参数列表、输出 JSON shape 示例、典型错误
+  - 通用 agent profile（`auditor.yaml` 等）的 `skills_required` 默认含 `available-tools`
+- **依赖**: T0.7、T0.8
+- **优先级**: P0
+- **估时**: 0.5d
 
 ### T0.9 通用 Agent Profile 草稿（`Scrivai/agents/`）
 - **DoD**:
@@ -151,6 +169,16 @@
 ---
 
 ## M1: 真实 AgentSession + 真实集成（Week 3-5）
+
+### T1.0 `build_qmd_client_from_config` 工厂（v3 新增）
+- **DoD**:
+  - `scrivai/__init__.py` 暴露 `build_qmd_client_from_config(db_path)`
+  - 内部封装 `import qmd; qmd.connect(db_path)`
+  - 返回对象满足 `QmdClient` Protocol（contracts）
+  - 契约测试：业务层仅通过此函数获取 qmd client
+- **依赖**: T0.5
+- **优先级**: P0
+- **估时**: 0.2d
 
 ### T1.1 接通 Claude Agent SDK
 - **DoD**:

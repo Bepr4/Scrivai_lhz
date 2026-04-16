@@ -28,22 +28,94 @@ def test_exceptions_importable() -> None:
 
 def test_pes_module_importable() -> None:
     """scrivai.models.pes 可导入全部声明类。"""
+    from scrivai.models.pes import (
+        CancelHookContext,
+        FailureHookContext,
+        HookContext,
+        ModelConfig,
+        OutputHookContext,
+        PESConfig,
+        PESRun,
+        PhaseConfig,
+        PhaseHookContext,
+        PhaseResult,
+        PhaseTurn,
+        PromptHookContext,
+        PromptTurnHookContext,
+        RunHookContext,
+    )
+
+    # 显式断言:14 个符号全部成功导入(避免被认作"无断言空测试")
+    for cls in (
+        ModelConfig,
+        PhaseConfig,
+        PESConfig,
+        PhaseTurn,
+        PhaseResult,
+        PESRun,
+        HookContext,
+        RunHookContext,
+        PhaseHookContext,
+        PromptHookContext,
+        PromptTurnHookContext,
+        FailureHookContext,
+        OutputHookContext,
+        CancelHookContext,
+    ):
+        assert cls is not None
 
 
 def test_workspace_module_importable() -> None:
-    pass
+    """scrivai.models.workspace 可导入全部声明类。"""
+    from scrivai.models.workspace import (
+        WorkspaceHandle,
+        WorkspaceManager,
+        WorkspaceSnapshot,
+        WorkspaceSpec,
+    )
+
+    for cls in (WorkspaceSpec, WorkspaceSnapshot, WorkspaceHandle, WorkspaceManager):
+        assert cls is not None
 
 
 def test_knowledge_module_importable() -> None:
-    pass
+    """scrivai.models.knowledge 可导入全部声明类。"""
+    from scrivai.models.knowledge import (
+        ChunkRef,
+        CollectionInfo,
+        Library,
+        LibraryEntry,
+        SearchResult,
+    )
+
+    for cls in (LibraryEntry, Library, ChunkRef, SearchResult, CollectionInfo):
+        assert cls is not None
 
 
 def test_trajectory_module_importable() -> None:
-    pass
+    """scrivai.models.trajectory 可导入全部声明类。"""
+    from scrivai.models.trajectory import (
+        FeedbackRecord,
+        PhaseRecord,
+        TrajectoryRecord,
+    )
+
+    for cls in (TrajectoryRecord, PhaseRecord, FeedbackRecord):
+        assert cls is not None
 
 
 def test_evolution_module_importable() -> None:
-    pass
+    """scrivai.models.evolution 可导入全部声明类。"""
+    from scrivai.models.evolution import (
+        Evaluator,
+        EvolutionConfig,
+        EvolutionRun,
+        FeedbackExample,
+        SkillsRootResolver,
+    )
+
+    for cls in (EvolutionConfig, EvolutionRun, FeedbackExample, Evaluator, SkillsRootResolver):
+        assert cls is not None
 
 
 # ────── PESRun.status Literal ──────

@@ -1823,12 +1823,11 @@ def create(self, spec: WorkspaceSpec) -> WorkspaceHandle:
         }, ensure_ascii=False, indent=2))
 
         return WorkspaceHandle(
-            run_id=spec.run_id, root=root,
+            run_id=spec.run_id, root_dir=root,
             working_dir=working, data_dir=data,
             output_dir=output, logs_dir=logs,
-            meta_path=root / "meta.json",
             snapshot=snapshot,
-        )
+        )  # meta.json 路径通过 root_dir / "meta.json" 派生，不作为字段存储
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()

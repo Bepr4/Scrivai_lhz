@@ -30,7 +30,10 @@ class PhaseConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(..., description="阶段名:plan / execute / summarize 或自定义")
+    name: str = Field(
+        ...,
+        description=("阶段名:固定为 plan / execute / summarize 之一(BasePES 只迭代这三个名字)。"),
+    )
     additional_system_prompt: str = Field(default="", description="阶段特定 system prompt 追加")
     allowed_tools: list[str] = Field(..., description="SDK allowed_tools 列表")
     max_turns: int = Field(default=10, description="单次 query 内 Agent 最多交互轮数")

@@ -18,6 +18,7 @@ from scrivai.models.workspace import (
     WorkspaceSnapshot,
     WorkspaceSpec,
 )
+from scrivai.pes.hooks import HookManager, hookimpl
 from scrivai.workspace.manager import build_workspace_manager
 
 __all__ = [
@@ -34,4 +35,7 @@ __all__ = [
     "WorkspaceHandle",
     "WorkspaceManager",
     "build_workspace_manager",
+    # M0.25 T0.5 — Hooks
+    "HookManager",
+    "hookimpl",
 ]

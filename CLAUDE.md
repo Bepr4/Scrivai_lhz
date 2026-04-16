@@ -57,9 +57,8 @@ doc = project.generate_and_review(inputs={...}, max_revisions=2)
 
 1. **查阅规格 (Read Specs)**
    必须仔细阅读 `docs/` 下文档：
-   - `docs/architecture.md` — 系统架构（四层：知识库 → 引擎 → 编排 → SDK）
-   - `docs/experiment_plan.md` — 实验方案
-   - `docs/TD.md` — 技术方案（模块接口规格）
+   - `docs/design.md` — 完整设计文档（权威：架构 / 契约 / 模块依赖拓扑 / SDK 集成）
+   - `docs/TD.md` — 任务分解与里程碑
 
 2. **计划 (Plan)**
    必须使用 plan 模式输出开发计划，包含：
@@ -137,9 +136,9 @@ doc = project.generate_and_review(inputs={...}, max_revisions=2)
 | 需求 | 文档路径 | 说明 |
 |------|----------|------|
 | 项目目标与背景 | `README.md` | Scrivai 是什么、解决什么问题 |
-| 架构与模块设计 | `docs/architecture.md` | 四层架构：知识库→引擎→编排→SDK |
-| 技术方案（模块接口） | `docs/TD.md` | 逐模块接口规格 |
-| 实验方案 | `docs/experiment_plan.md` | 评测方案与结果 |
+| 完整设计（权威） | `docs/design.md` | 架构 / 对外契约 / 模块依赖拓扑 / SDK 集成 / 不变量 |
+| 任务分解与里程碑 | `docs/TD.md` | M0-M3 任务清单 + DoD + 估时 |
+| 三项目顶层计划 | `../GOVDOC_PROGRAM_PLAN.md` | qmd / Scrivai / GovDoc 三方契约 |
 | 代码规范与 SOP | `CLAUDE.md`（本文件） | 开发流程与规则 |
 | 审查标准 | `REVIEW_GUIDE.md` | 代码审查依据 |
 

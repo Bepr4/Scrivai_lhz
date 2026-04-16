@@ -481,8 +481,8 @@ Scrivai/
 ├── examples/                # 示例配置
 ├── tests/                   # 测试
 ├── docs/                    # 文档
-│   ├── architecture.md      # 架构设计
-│   └── sdk_design.md        # SDK 详细设计
+│   ├── design.md            # 设计文档(权威)
+│   └── TD.md                # 任务分解
 ├── CLAUDE.md                # 开发规范
 ├── REVIEW_GUIDE.md          # 代码审查指南
 ├── pyproject.toml
@@ -493,8 +493,8 @@ Scrivai/
 
 | 文档 | 说明 |
 |------|------|
-| [docs/architecture.md](docs/architecture.md) | 系统架构详解 |
-| [docs/sdk_design.md](docs/sdk_design.md) | SDK API 详细设计 |
+| [docs/design.md](docs/design.md) | 完整设计文档(权威) |
+| [docs/TD.md](docs/TD.md) | 任务分解与里程碑 |
 | [CLAUDE.md](CLAUDE.md) | 开发规范与 SOP |
 | [REVIEW_GUIDE.md](REVIEW_GUIDE.md) | 代码审查指南 |
 

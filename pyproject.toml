@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrivai"
-version = "0.2.0a0"
+version = "0.1.3"
 description = "Claude Agent 编排框架 — 文档审核 / 生成场景"
 readme = "README.md"
 license = {text = "MIT"}
@@ -42,9 +42,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/iomgaa/scrivai"
-Repository = "https://github.com/iomgaa/scrivai"
-Issues = "https://github.com/iomgaa/scrivai/issues"
+Homepage = "https://github.com/iomgaa-ycz/Scrivai"
+Repository = "https://github.com/iomgaa-ycz/Scrivai"
+Issues = "https://github.com/iomgaa-ycz/Scrivai/issues"
 
 [project.scripts]
 scrivai-cli = "scrivai.cli.__main__:main"

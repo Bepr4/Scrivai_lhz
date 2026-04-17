@@ -547,6 +547,7 @@ M0 按依赖拓扑拆为 **4 个独立可验证的子里程碑**(M0 / M0.25 / M0
 - **依赖**:T1.1, T0.15
 - **契约测试**:`tests/contract/test_extractor_pes.py`
 - **估时**:1.5d
+- **实施偏离**(M1.5a,2026-04-17):构造参数改为与 `BasePES.__init__` 等同(零新参数),`output_schema` 等业务字段改走 `runtime_context`。详见 `docs/superpowers/specs/2026-04-17-scrivai-m1.5-design.md` §2 决策 #1-2 和 `docs/design.md` §4.4(已对齐)。
 
 ### T1.5 `AuditorPES` 实现
 
@@ -561,6 +562,7 @@ M0 按依赖拓扑拆为 **4 个独立可验证的子里程碑**(M0 / M0.25 / M0
 - **依赖**:T1.4
 - **契约测试**:`tests/contract/test_auditor_pes.py`
 - **估时**:1.5d
+- **实施偏离**(M1.5a,2026-04-17):构造参数改为与 `BasePES.__init__` 等同(零新参数),`output_schema / verdict_levels / evidence_required` 等业务字段改走 `runtime_context`;checkpoints 通过业务层预写 `workspace.data_dir/checkpoints.json` 传入。详见 `docs/superpowers/specs/2026-04-17-scrivai-m1.5-design.md` §2 决策 #1-2 和 `docs/design.md` §4.4.2(已对齐)。
 
 ### T1.6 `GeneratorPES` 实现
 
@@ -580,6 +582,7 @@ M0 按依赖拓扑拆为 **4 个独立可验证的子里程碑**(M0 / M0.25 / M0
 - **依赖**:T1.4, T0.12
 - **契约测试**:`tests/contract/test_generator_pes.py`
 - **估时**:1.8d
+- **实施偏离**(M1.5a,2026-04-17):构造参数改为与 `BasePES.__init__` 等同(零新参数),`template_path / context_schema / auto_render` 等业务字段改走 `runtime_context`。详见 `docs/superpowers/specs/2026-04-17-scrivai-m1.5-design.md` §2 决策 #1-2 和 `docs/design.md` §4.4.3(已对齐)。
 
 ### T1.7 Library 真实接 qmd
 

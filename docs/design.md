@@ -543,6 +543,10 @@ after_run (finally 一定触发;含最终持久化)
 
 三个预置 PES 都继承 `BasePES`，封装"文档类场景"的常见业务模式。每个都有默认的 PESConfig、默认 skill 组合、默认输出解析逻辑——用户可以部分覆盖。
 
+**构造签名契约**(三个 PES 统一):三个预置 PES 的构造签名等同 `BasePES.__init__`,**不引入任何新构造参数**(Herald2 模式,参考 `core/pes/{draft,feature_extract,mutate}.py`)。业务参数通过 `runtime_context: dict` 字段延迟注入,各字段在子类的 `build_execution_context` / `postprocess_phase_result` / `validate_phase_outputs` 中按需取值。缺失必需字段时,子类在首次用到它的扩展点方法里抛 `ValueError`,由 `BasePES._run_phase` 统一归并为 `error_type="response_parse_error"`(不可重试)。
+
+skill 管理完全由 `WorkspaceManager` 负责(§5.2 `copytree(project_root/skills, working/.claude/skills)`),PES 层不涉及任何 skill 参数或传递逻辑。
+
 #### 4.4.1 ExtractorPES — 抽取结构化条目
 
 **用途**：从文档抽取结构化条目（审核点、关键条款、需求项、FAQ 等）
@@ -560,23 +564,24 @@ after_run (finally 一定触发;含最终持久化)
 }
 ```
 
-**用户覆盖点**：
+**runtime_context 业务字段**(业务层通过 `runtime_context=dict(...)` 注入):
 
-| 参数 | 作用 |
-|---|---|
-| `output_schema: type[BaseModel]` | 替换默认的 items schema（如 `list[GovCheckpoint]`） |
-| `extra_skills: list[str]` | 追加业务 skill（默认 skill 不变） |
-| `skills_override: list[str]` | 完全替换默认 skill |
-| `config_override: PESConfig` | 替换整个 PES 配置 |
-| `plan_prompt_override / execute_prompt_override / summarize_prompt_override` | 覆盖单阶段的 additional_system_prompt |
+| 字段 | 类型 | 必需 | 作用 |
+|---|---|---|---|
+| `output_schema` | `type[BaseModel]` | ✅ | summarize 阶段校验 working/output.json |
 
-**`handle_phase_response` 职责**：
+**prompt / skill / config 定制**:
+- prompt 话术:修改 `scrivai/agents/extractor.yaml` 或业务层复制后 `load_pes_config(my.yaml)` 传 `config=`
+- skill:由 Workspace 的 `project_root/skills/` copytree 注入,PES 层不参与(§4.9 + §5.2)
+- 完整 PESConfig 替换:直接把自定义 PESConfig 实例传 `config=`
+
+**扩展点职责**:
 
 | Phase | 动作 |
 |---|---|
-| `plan` | 校验 `plan.json` 含 `items_to_extract` 列表 |
-| `execute` | 校验每个 plan item 有对应的 `findings/<id>.json` |
-| `summarize` | 读 `output.json`，用 `output_schema` 校验（失败 → PhaseError） |
+| `plan` | 默认 `required_outputs=[plan.md, plan.json]` |
+| `execute` | `validate_phase_outputs` 校验每个 plan item 有对应的 `findings/<id>.json` |
+| `summarize` | `postprocess_phase_result` 读 `output.json`,用 `output_schema` 校验(失败 → `response_parse_error`) |
 
 #### 4.4.2 AuditorPES — 对照审核
 
@@ -601,19 +606,24 @@ after_run (finally 一定触发;含最终持久化)
 }
 ```
 
-**用户覆盖点**：同 ExtractorPES，额外：
+**runtime_context 业务字段**:
 
-| 参数 | 作用 |
-|---|---|
-| `verdict_levels: list[str]` | 自定义判定级别（默认 `["合格","不合格","不适用","需要澄清"]`） |
-| `evidence_required: bool` | 是否强制每个 finding 必须有 evidence（默认 `True`） |
+| 字段 | 类型 | 必需 | 默认 | 作用 |
+|---|---|---|---|---|
+| `output_schema` | `type[BaseModel]` | ✅ | — | summarize 阶段 schema 校验 |
+| `verdict_levels` | `list[str]` | — | `["合格","不合格","不适用","需要澄清"]` | finding.verdict 合法集合 |
+| `evidence_required` | `bool` | — | `True` | 每 finding 是否必须含 evidence |
 
-**`handle_phase_response` 职责**：
+**业务层前置**:在 `pes.run()` 之前把 checkpoints 以 `[{id, description, ...}]` 写入 `workspace.data_dir/checkpoints.json`;execute 阶段覆盖率校验基于此文件。
+
+**prompt / skill / config 定制**:同 ExtractorPES,默认 YAML 在 `scrivai/agents/auditor.yaml`。
+
+**扩展点职责**:
 
 | Phase | 动作 |
 |---|---|
-| `execute` | 校验 checkpoints 覆盖率（每个 cp_id 至少有一个 finding 文件） |
-| `summarize` | 校验所有 verdict 在 `verdict_levels` 内；校验 evidence 必需性 |
+| `execute` | `validate_phase_outputs` 校验 checkpoints 覆盖率(data/checkpoints.json 的 cp_id 集合 = findings/*.json stem 集合) |
+| `summarize` | `postprocess_phase_result` 校验 schema + 每 verdict ∈ verdict_levels + evidence_required=True 时 evidence 非空 |
 
 #### 4.4.3 GeneratorPES — 按模板生成
 
@@ -632,23 +642,25 @@ after_run (finally 一定触发;含最终持久化)
 }
 ```
 
-**用户覆盖点**:同 ExtractorPES,额外:
+**runtime_context 业务字段**:
 
-| 参数 | 作用 |
-|---|---|
-| `template_path: Path` | **必传**,docxtpl 模板 |
-| `context_schema: type[BaseModel]` | 渲染上下文的类型约束 |
-| `auto_render: bool` | summarize 阶段是否自动调 `DocxRenderer` 渲染(**默认 `False`**) |
+| 字段 | 类型 | 必需 | 默认 | 作用 |
+|---|---|---|---|---|
+| `template_path` | `Path` | ✅ | — | docxtpl 模板路径(plan 阶段解析占位符) |
+| `context_schema` | `type[BaseModel]` | ✅ | — | summarize 阶段 schema 校验 |
+| `auto_render` | `bool` | — | `False` | summarize 结束是否自动渲染 `output/final.docx` |
 
 **`auto_render` 默认 False 的理由**:docxtpl 模板制作约束(§4.8)较脆弱——模板必须手工 Word 制作、单 cell 内不嵌套循环、不支持表中表。默认关闭以避免 summarize 阶段因模板限制失败;业务层在确认模板符合 docxtpl 约束后显式 `auto_render=True` 开启。未开启时,summarize 只校验 context schema 并写 `output.json`,docx 渲染由业务层自己调 `DocxRenderer` 做。
 
-**`handle_phase_response` 职责**:
+**prompt / skill / config 定制**:同 ExtractorPES,默认 YAML 在 `scrivai/agents/generator.yaml`。
+
+**扩展点职责**:
 
 | Phase | 动作 |
 |---|---|
-| `plan` | 解析模板占位符,校验 `plan.json` 覆盖所有占位符 |
-| `execute` | 校验每个占位符有 `findings/<placeholder>.json` |
-| `summarize` | 校验 context schema;**若** `auto_render=True` → 调 `DocxRenderer.render` 产 docx |
+| `plan` | `build_execution_context` 解析模板占位符注入 `context["placeholders"]`;`validate_phase_outputs` 校验 `plan.json.fills` 覆盖所有占位符 |
+| `execute` | `validate_phase_outputs` 校验每个占位符有 `findings/<placeholder>.json` |
+| `summarize` | `postprocess_phase_result` 校验 context schema;**若** `auto_render=True` → 用 `DocxTemplate.render` 产 `output/final.docx` |
 
 ### 4.5 TrajectoryStore — 轨迹持久化
 

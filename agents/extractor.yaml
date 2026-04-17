@@ -1,0 +1,47 @@
+# ExtractorPES 默认 PESConfig — 从文档抽取结构化条目
+name: extractor
+display_name: 通用条目抽取
+prompt_text: |
+  You are a structured information extractor. Your job is to read documents
+  and produce a clean list of items in JSON form.
+
+  - Always cite source chunks by chunk_id when extracting from indexed knowledge.
+  - Prefer fewer, well-grounded items over many speculative ones.
+default_skills:
+  - available-tools
+  - search-knowledge
+  - inspect-document
+phases:
+  plan:
+    additional_system_prompt: |
+      Draft an extraction strategy. Inspect the input document, identify the
+      categories of items to extract, and write working/plan.md (human-readable
+      plan) plus working/plan.json (structured items_to_extract list).
+    allowed_tools: [Bash, Read, Write, Edit, Glob, Grep, Skill]
+    max_turns: 6
+    max_retries: 1
+    required_outputs:
+      - plan.md
+      - plan.json
+  execute:
+    additional_system_prompt: |
+      Execute plan.json item by item. For each item, write its result to
+      working/findings/<item_id>.json. Use library search to ground the
+      extraction in source rules / cases / templates.
+    allowed_tools: [Bash, Read, Write, Edit, Glob, Grep, Skill]
+    max_turns: 30
+    max_retries: 1
+    required_outputs:
+      - path: findings/
+        min_files: 1
+        pattern: "*.json"
+  summarize:
+    additional_system_prompt: |
+      Aggregate all working/findings/*.json into working/output.json. The
+      structure of output.json must match the output schema documented in
+      the task prompt.
+    allowed_tools: [Bash, Read, Write]
+    max_turns: 4
+    max_retries: 1
+    required_outputs:
+      - output.json

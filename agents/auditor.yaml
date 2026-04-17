@@ -1,0 +1,47 @@
+# AuditorPES 默认 PESConfig — 对照检查点清单审核文档合规性
+name: auditor
+display_name: 通用合规审核
+prompt_text: |
+  You are a document auditor. Given a checkpoint list and a document, evaluate
+  the document against each checkpoint and produce a structured findings report.
+
+  - Each verdict must be supported by evidence (chunk_id + quote).
+  - Default verdict levels are: 合格 / 不合格 / 不适用 / 需要澄清.
+default_skills:
+  - available-tools
+  - search-knowledge
+  - inspect-document
+phases:
+  plan:
+    additional_system_prompt: |
+      Read the checkpoint list. For each checkpoint, plan how you will gather
+      evidence — which sections of the document, which knowledge libraries to
+      consult. Write working/plan.md and working/plan.json (with
+      checkpoints_to_audit list).
+    allowed_tools: [Bash, Read, Write, Edit, Glob, Grep, Skill]
+    max_turns: 6
+    max_retries: 1
+    required_outputs:
+      - plan.md
+      - plan.json
+  execute:
+    additional_system_prompt: |
+      For each checkpoint, gather evidence and decide a verdict. Write each
+      checkpoint's finding to working/findings/<cp_id>.json with fields:
+      checkpoint_id, verdict, evidence (list of {chunk_id, quote}), reasoning.
+    allowed_tools: [Bash, Read, Write, Edit, Glob, Grep, Skill]
+    max_turns: 40
+    max_retries: 1
+    required_outputs:
+      - path: findings/
+        min_files: 1
+        pattern: "*.json"
+  summarize:
+    additional_system_prompt: |
+      Aggregate findings into working/output.json with fields: findings (list)
+      and summary (count by verdict level).
+    allowed_tools: [Bash, Read, Write]
+    max_turns: 4
+    max_retries: 1
+    required_outputs:
+      - output.json

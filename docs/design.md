@@ -1670,17 +1670,9 @@ async def _run_phase(self, phase, run, task_prompt, attempt_no: int) -> PhaseRes
                                           attempt_no=attempt_no, turn=t),
                 ),
             )
-        except RateLimitError as e:
-            error_type = "sdk_rate_limit"
-            error = str(e)
-            # 注:SDK 级重试已在 _call_sdk_query 内做(指数退避 3 次);到这里已是最后失败
-            raise
-        except MaxTurnsExceeded as e:
-            error_type = "max_turns_exceeded"
-            error = str(e)
-            raise
-        except AnthropicError as e:
-            error_type = "sdk_other"
+        except _SDKError as e:
+            # _SDKError 由 BasePES._call_sdk_query 翻译 LLMClient 内部异常构造
+            error_type = e.error_type   # "max_turns_exceeded" / "sdk_other"
             error = str(e)
             raise
         except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1766,10 +1758,12 @@ async def _run_phase(self, phase, run, task_prompt, attempt_no: int) -> PhaseRes
         raise PhaseError(phase, result.error, result=result) from e
 ```
 
+**SDK 0.1.61 异常模型**:SDK 不通过 `RateLimitError` / `MaxTurnsExceeded` / `AnthropicError` 异常表达错误,而是通过消息字段(`ResultMessage.is_error` + `stop_reason` / `AssistantMessage.error`)。Scrivai 的策略:`LLMClient`(`scrivai/pes/llm_client.py`)在边界把消息流错误翻译为模块内部异常 `_MaxTurnsError` / `_SDKExecutionError`,`BasePES._call_sdk_query` 再统一映射为 `_SDKError(error_type=...)`。`_run_phase` step 5 据此组装 PhaseResult。SDK 升级时,只需改 `LLMClient`,`BasePES` 零改动。
+
 **关键点**:
 - **三种失败出口**(SDK 异常 / postprocess 抛 / validate 抛)**都**通过 `PhaseError` 包装,带 `result: PhaseResult`
 - **on_phase_failed**在 `_run_phase_with_retry` 统一 dispatch,所有失败路径都能触发
-- **重试决策**由 `result.is_retryable` 控制:rate_limit / max_turns / output_validation 允许重试;sdk_other / response_parse / cancelled 不重试
+- **重试决策**由 `result.is_retryable` 控制:max_turns / sdk_other / output_validation 允许重试;response_parse / cancelled 不重试
 - **on_output_written** 只在 summarize 且 validate 通过后、after_phase 前触发一次
 - **KeyboardInterrupt / CancelledError** 不包 PhaseError,直接冒泡到 `run()` 的 cancel 分支
 
@@ -1886,17 +1880,18 @@ Scrivai 的重试是**分层的**,每层职责明确:
 
 | 层 | 触发 | 实现位置 | 重试策略 | 是否计入 `attempt_no` |
 |---|---|---|---|---|
-| **L1 传输级** | `RateLimitError` / 网络超时 | `_call_sdk_query` 内部 | 指数退避 3 次(1s / 4s / 16s) | 否(对外透明) |
-| **L2 Phase 级** | L1 最终失败 / `output_validation_error` | `_run_phase_with_retry` | 最多 `phase_cfg.max_retries + 1` 次(默认 1 次重试,即最多跑 2 遍) | 是(`attempt_no += 1`) |
+| ~~L1 传输级~~ | (M1.0 不实现) | — | 推迟到 M2 T2.5 视压测结果决定 | — |
+| **L2 Phase 级** | 任何 SDK 失败 / `output_validation_error` | `_run_phase_with_retry` | 最多 `phase_cfg.max_retries + 1` 次(默认 1 次重试,即最多跑 2 遍) | 是(`attempt_no += 1`) |
 | **L3 Run 级** | L2 最终失败 | 无(不重试) | `run.status = "failed"` | — |
+
+**M1.0 契约**:所有 SDK 失败(包括 rate limit / 网络超时 / SDK 内部错误)统一归并到 `error_type="sdk_other"`,`is_retryable=True`,由 L2 phase 级重试兜底。**不实现** L1 传输级精确退避(SDK 0.1.61 提供的 `RateLimitInfo.resets_at` 在 M2 压测后再决定是否启用)。
 
 **is_retryable 决策表**(决定是否走 L2 重试):
 
 | `error_type` | `is_retryable` | 理由 |
 |---|---|---|
-| `sdk_rate_limit` | ✅ | L1 已用尽退避;但换时间窗可能成功 |
 | `max_turns_exceeded` | ✅ | 可能首次超限,重新规划能更简洁 |
-| `sdk_other` | ❌ | 其他 SDK 错误通常是配置 / 模型问题,重跑无意义 |
+| `sdk_other` | ✅ | M1.0 契约:任何 SDK 失败(rate limit / 网络 / SDK 内部)都允许重试,L2 phase 级兜底 |
 | `response_parse_error` | ❌ | Agent 输出格式错,重跑大概率还错;需改 prompt / skill |
 | `output_validation_error` | ✅ | 产物缺失或不合规,Agent 重跑可能补全 |
 | `cancelled` | ❌ | 用户/系统中断,不应自动恢复 |
@@ -1906,10 +1901,8 @@ Scrivai 的重试是**分层的**,每层职责明确:
 
 | 情形 | 层级 | `PhaseResult.error_type` | `will_retry` | 最终影响 |
 |---|---|---|---|---|
-| SDK `RateLimitError` 首次 | L1 | — | L1 内自动退避 | 无 |
-| SDK `RateLimitError` L1 耗尽 | L2 | `sdk_rate_limit` | 看 `attempt_no < max_retries` | 若仍失败 → run.status="failed" |
-| 阶段达 `max_turns` | L2 | `max_turns_exceeded` | 同上 | 同上 |
-| SDK 其他 `AnthropicError` | — | `sdk_other` | ❌ 不重试 | 直接 run.status="failed" |
+| 阶段达 `max_turns` | L2 | `max_turns_exceeded` | 看 `attempt_no < max_retries` | 若仍失败 → run.status="failed" |
+| 任何 SDK 失败(rate limit / 网络 / 其他)| L2 | `sdk_other` | 看 `attempt_no < max_retries` | 重试耗尽 → run.status="failed" |
 | `postprocess_phase_result` 抛异常 | — | `response_parse_error` | ❌ | run.status="failed" |
 | `validate_phase_outputs` 抛异常 | L2 | `output_validation_error` | ✅ 允许重试 | 重试耗尽后 run.status="failed" |
 | `KeyboardInterrupt` / `CancelledError` | — | `cancelled` | ❌ | run.status="cancelled";workspace **不归档** |
@@ -1929,17 +1922,32 @@ Scrivai 的重试是**分层的**,每层职责明确:
 
 两者**并存、互补**。`TrajectoryRecorderHook` 属于 BasePES Hooks,记录 phase 级事件;SDK hooks 如需使用(例如细粒度 tool call 校验),由 BasePES 在构造 `ClaudeAgentOptions` 时装配,不对外暴露。
 
-#### 5.3.6 SDK 依赖暴露面(未解决项,降格表述)
+#### 5.3.6 SDK 适配单点 + 多供应商策略
 
-当前 `BasePES._run_phase` 直接 `except RateLimitError / MaxTurnsExceeded / AnthropicError`——这些都是 `claude_agent_sdk` 的原生异常类。这意味着:
+SDK 0.1.61 通过**消息字段**(`ResultMessage.is_error` / `AssistantMessage.error`)而非异常表达错误。Scrivai 的策略:**`LLMClient`(`scrivai/pes/llm_client.py`)在边界把消息流错误翻译为模块内部异常**(`_MaxTurnsError` / `_SDKExecutionError`),`BasePES._call_sdk_query` 再映射为 `_SDKError(error_type=...)`。这是单点适配:SDK 升级或换供应商时,只改 `LLMClient`,`BasePES` 零改动。
 
-- SDK 改异常类命名 / 继承结构 → `BasePES` 需要同步改
-- 切换到其他供应商 SDK → 错误映射、turn 解析、ResultMessage 识别都需要改
-- Trajectory 记录的 `error_type` 枚举和 SDK 异常紧耦合
+**多供应商**:`ModelConfig.base_url + api_key` 通过 `ClaudeAgentOptions(env={"ANTHROPIC_BASE_URL": ..., "ANTHROPIC_AUTH_TOKEN": ...})` 注入 SDK 子进程 env;主进程 env 不污染,并发安全。`base_url` / `api_key` 为 `None` 时 SDK 继承父进程 env(`.env` 加载的默认值)。若本机设有 http/https proxy,通常要把私有网关 IP 加入 `NO_PROXY`(见 `.env.example`)。
 
-**MVP 现状**:接受这层耦合。`_call_sdk_query` 是改动集中点,SDK 升级只需要改这一个方法 + 错误映射。
+**未来方案**(M2+ 评估):引入内部 `AgentDriver Protocol` —— 把 `LLMClient` 抽象化以支持非 SDK 供应商(自研 Agent loop / OpenAI Assistants / Vertex AI 等)。多供应商需求到来时再做,不在 M1 范围。
 
-**未来方案**(M2+ 评估):引入内部 `AgentDriver Protocol`——封装 `query / 异常分类 / turn 解析`,BasePES 只依赖 Protocol,具体 driver(Claude / GLM / MiniMax)独立实现。多供应商需求到来时再做,不在 M0 范围。
+#### 5.3.7 `LLMClient` 接口约定
+
+`LLMClient.execute_task(...)` 是 `BasePES` 与 SDK 之间的**唯一适配点**。接口约定:
+
+| 方面 | 约定 |
+|---|---|
+| 输入 | `prompt / system_prompt / allowed_tools / max_turns / permission_mode / cwd / extra_env / on_turn` |
+| 输出 | `LLMResponse(result, turns, usage, duration_ms, session_id)` |
+| 异常 | `_MaxTurnsError` / `_SDKExecutionError` / `RuntimeError("未收到 ResultMessage")` / SDK 原生异常透传(`CLIConnectionError` / `ProcessError` / `ClaudeSDKError`) |
+| 内部重试 | **无** —— L2 phase 级重试由 `BasePES._run_phase_with_retry` 负责 |
+| 副作用 | 调 `on_turn(turn)` 回调通知 BasePES dispatch `after_prompt_turn` hook;**不**写文件、**不**改 env、**不**记 trajectory(后者由 hook 系统统一处理) |
+
+**测试约定**:
+- 单测通过 `unittest.mock.patch("scrivai.pes.llm_client.query", ...)` 替换 SDK 入口
+- 集成测通过 `BasePES(llm_client=mock_llm_client)` 注入,绕过 LLMClient 内部细节
+- 真 SDK smoke 测必须用 `pytest.mark.skipif(not os.getenv("ANTHROPIC_AUTH_TOKEN"))`
+
+后续若多供应商需求来,只需写新 driver 实现同接口(后改为 `AgentDriver Protocol`),`BasePES` 零改动。
 
 ### 5.4 MVP 可观测性范围(未解决项,降格表述)
 

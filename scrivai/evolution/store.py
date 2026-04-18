@@ -20,6 +20,8 @@ from scrivai.models.evolution import (
     SkillVersionStatus,
 )
 
+_SKIP_DIR_NAMES = {"__pycache__", ".git", ".mypy_cache", ".pytest_cache"}
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -81,7 +83,7 @@ class SkillVersionStore:
         return self._row_to_version(row)
 
     def list_versions(
-        self, pes_name: str, skill_name: str, status: Optional[str] = None
+        self, pes_name: str, skill_name: str, status: Optional[SkillVersionStatus] = None
     ) -> list[SkillVersion]:
         q = "SELECT * FROM skill_versions WHERE pes_name=? AND skill_name=?"
         args: list[Any] = [pes_name, skill_name]
@@ -119,9 +121,14 @@ class SkillVersionStore:
             raise FileNotFoundError(f"skills/{skill_name} not found in {source_project_root}")
         snapshot: dict[str, str] = {}
         for p in sorted(skill_dir.rglob("*")):
-            if p.is_file() and not p.name.startswith("."):
-                rel = p.relative_to(skill_dir)
-                snapshot[str(rel)] = p.read_text(encoding="utf-8")
+            if not p.is_file():
+                continue
+            if p.name.startswith("."):
+                continue
+            if any(part in _SKIP_DIR_NAMES for part in p.relative_to(skill_dir).parts):
+                continue
+            rel = p.relative_to(skill_dir)
+            snapshot[str(rel)] = p.read_text(encoding="utf-8")
         h = hashlib.sha256(
             json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()[:8]

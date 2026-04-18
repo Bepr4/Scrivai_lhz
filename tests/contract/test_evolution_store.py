@@ -159,3 +159,19 @@ def test_get_baseline_creates_from_source_when_absent(store, tmp_path):
     # 第二次调返回同一条(不重复入库)
     bl2 = store.get_baseline("extractor", "available-tools", source_project_root=proj)
     assert bl.version_id == bl2.version_id
+
+
+def test_get_baseline_returns_existing_root_when_no_promoted(store, tmp_path):
+    """Path 2: orphan root exists (parent=None), no promoted → return that root."""
+    proj = tmp_path / "proj"
+    skill_dir = proj / "skills" / "available-tools"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# from disk content", encoding="utf-8")
+
+    # First call populates baseline from disk (path 3)
+    first = store.get_baseline("extractor", "available-tools", source_project_root=proj)
+    # Modify disk content — second call should NOT re-read (path 2: returns cached root)
+    (skill_dir / "SKILL.md").write_text("# changed on disk", encoding="utf-8")
+    second = store.get_baseline("extractor", "available-tools", source_project_root=proj)
+    assert first.version_id == second.version_id
+    assert second.content_snapshot["SKILL.md"] == "# from disk content"

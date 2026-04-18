@@ -3,13 +3,6 @@
 完整列表参考 docs/design.md §4.1。
 """
 
-from scrivai.models.evolution import (
-    Evaluator,
-    EvolutionConfig,
-    EvolutionRun,
-    FeedbackExample,
-    SkillsRootResolver,
-)
 from scrivai.models.knowledge import (
     ChunkRef,
     CollectionInfo,
@@ -76,10 +69,4 @@ __all__ = [
     "TrajectoryRecord",
     "PhaseRecord",
     "FeedbackRecord",
-    # evolution
-    "EvolutionConfig",
-    "EvolutionRun",
-    "FeedbackExample",
-    "Evaluator",
-    "SkillsRootResolver",
 ]

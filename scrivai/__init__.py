@@ -9,9 +9,6 @@ from qmd import ChunkRef, CollectionInfo, SearchResult
 # 预置 PES(M0.75 占位,M1 实现)
 from scrivai.agents import AuditorPES, ExtractorPES, GeneratorPES
 
-# Evolution 占位(M2 实现)
-from scrivai.evolution import EvolutionTrigger, run_evolution
-
 # IO
 from scrivai.io import (
     DocxRenderer,
@@ -30,13 +27,6 @@ from scrivai.knowledge import (
 )
 
 # Models — pydantic
-from scrivai.models.evolution import (
-    Evaluator,
-    EvolutionConfig,
-    EvolutionRun,
-    FeedbackExample,
-    SkillsRootResolver,
-)
 from scrivai.models.knowledge import Library, LibraryEntry
 from scrivai.models.pes import (
     CancelHookContext,
@@ -116,12 +106,6 @@ __all__ = [
     "TrajectoryRecord",
     "PhaseRecord",
     "FeedbackRecord",
-    # Evolution
-    "EvolutionConfig",
-    "EvolutionRun",
-    "FeedbackExample",
-    "Evaluator",
-    "SkillsRootResolver",
     # 抽象类
     "BasePES",
     "HookManager",
@@ -142,8 +126,6 @@ __all__ = [
     "TrajectoryStore",
     "TrajectoryRecorderHook",
     "PhaseLogHook",
-    "EvolutionTrigger",
-    "run_evolution",
     # IO
     "docx_to_markdown",
     "doc_to_markdown",

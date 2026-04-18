@@ -35,15 +35,9 @@ EXPECTED_PUBLIC_API = {
     "TrajectoryRecord",
     "PhaseRecord",
     "FeedbackRecord",
-    # Evolution
-    "EvolutionConfig",
-    "EvolutionRun",
-    "FeedbackExample",
     # Protocol
     "Library",
     "WorkspaceManager",
-    "Evaluator",
-    "SkillsRootResolver",
     # 抽象类
     "BasePES",
     "HookManager",
@@ -64,8 +58,6 @@ EXPECTED_PUBLIC_API = {
     "TrajectoryStore",
     "TrajectoryRecorderHook",
     "PhaseLogHook",
-    "EvolutionTrigger",
-    "run_evolution",
     # IO
     "docx_to_markdown",
     "doc_to_markdown",

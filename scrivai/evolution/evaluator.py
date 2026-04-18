@@ -1,1 +1,1 @@
-"""Evaluator 内置实现(M2 T2.4 提供 IoUEvaluator / ExactMatchEvaluator 等)。"""
+"""M2 实施中(待 Task 6 完成)。"""

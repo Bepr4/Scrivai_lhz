@@ -163,7 +163,7 @@ demo 与 [`docs/design.md`](docs/design.md) §4.6 架构文档。
 
 ## 已知限制
 
-v0.2.0 不包含:
+v0.1.4 不包含:
 
 - **并发隔离** — 同一 skill 不应被两个业务方同时跑 `run_evolution`(无文件锁)
 - **观测指标** — LLM usage / duration / failure 未做 prometheus/otel 导出

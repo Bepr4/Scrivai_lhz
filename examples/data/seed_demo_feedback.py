@@ -104,7 +104,7 @@ def seed(db_path: Path) -> int:
             pes_name="extractor",
             model_name="glm-5.1",
             provider="glm",
-            sdk_version="0.2.0",
+            sdk_version="0.1.4",
             skills_git_hash=None,
             agents_git_hash=None,
             skills_is_dirty=False,

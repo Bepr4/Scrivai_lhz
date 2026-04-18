@@ -1,0 +1,17 @@
+[
+  {
+    "id": "CP001",
+    "description": "检查是否记录巡视日期/值班员/天气三要素",
+    "severity": "error"
+  },
+  {
+    "id": "CP002",
+    "description": "检查主变压器油位是否在 20-40℃ 刻度区间",
+    "severity": "error"
+  },
+  {
+    "id": "CP003",
+    "description": "检查 SF6 气体压力异常是否已按《运维规程》§6.2 上报调度",
+    "severity": "warning"
+  }
+]

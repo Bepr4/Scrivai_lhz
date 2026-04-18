@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# M3a 发版前 deprecation 验收脚本。
+# 参考 docs/TD.md M3 "Deprecation 验收清单"。
+# 使用: conda activate scrivai && bash scripts/verify_m3a_release.sh
+# 退出码: 0 = 全部通过;非 0 = 有残留,stderr 打印明细
+
+set -u  # 未定义变量视为错误(-e 会在 grep 无匹配时过早退出)
+cd "$(dirname "$0")/.."
+
+fail=0
+
+# 1. 老架构符号(M0 前原型 + M0 占位)必须 0 命中
+OLD_SYMBOLS=(
+  "LLMConfig" "LLMMessage" "LLMUsage"
+  "PromptTemplate" "FewShotTemplate" "OutputParser" "PydanticOutputParser"
+  "JsonOutputParser" "RetryingParser" "ExtractChain" "AuditChain" "GenerateChain"
+  "ProjectConfig" "KnowledgeStore" "AuditEngine" "AuditResult"
+  "GenerationEngine" "GenerationContext" "MockLLMClient" "AgentSession"
+  "FeedbackExample" "EvolutionConfig" "SkillsRootResolver"
+)
+# 豁免说明:
+# - "Project"       不扫 — 历史名称,当前无同名顶层类(EvolutionProposal 等非同源)
+# - "LLMClient"     不扫 — scrivai.pes.llm_client.LLMClient 是当前 SDK 封装
+# - "LLMResponse"   不扫 — scrivai.pes.llm_client.LLMResponse 是当前 SDK 返回数据类(名称复用)
+# - "EvolutionRun"  不扫 — EvolutionRunRecord / EvolutionRunConfig 是合法前缀
+
+for sym in "${OLD_SYMBOLS[@]}"; do
+  hits=$(git grep -l "\\b${sym}\\b" -- 'scrivai/*.py' 'scrivai/**/*.py' 2>/dev/null || true)
+  if [ -n "$hits" ]; then
+    echo "FAIL: ${sym} 残留:" >&2
+    echo "$hits" >&2
+    fail=1
+  fi
+done
+
+# 2a. litellm 和其他 M0 前符号不应出现在 examples/ 或 README / CHANGELOG 里
+doc_leak=$(git grep -l -E "\\blitellm\\b|\\bGenerationEngine\\b|\\bAuditEngine\\b|\\bLLM_API_KEY\\b" -- 'examples/*' 'README.md' 'examples/README.md' 'CHANGELOG.md' 2>/dev/null || true)
+if [ -n "$doc_leak" ]; then
+  echo "FAIL: examples/ 或主文档仍引用 M0 前符号:" >&2
+  echo "$doc_leak" >&2
+  fail=1
+fi
+
+# 2. 业务术语泄漏(scrivai 是通用库,不应含 GovDoc 场景词)
+leak=$(git grep -E "招标|政府采购|审核点|底稿|投标人" -- 'scrivai/*.py' 'scrivai/**/*.py' 2>/dev/null || true)
+if [ -n "$leak" ]; then
+  echo "FAIL: 业务术语泄漏到 scrivai/:" >&2
+  echo "$leak" >&2
+  fail=1
+fi
+
+# 3. 包目录不应含 .claude/(那是用户工作区目录)
+if [ -d scrivai/.claude ]; then
+  echo "FAIL: scrivai/.claude 目录不应存在" >&2
+  fail=1
+fi
+
+# 4. litellm 依赖已移除(pyproject.toml 不应再出现)
+if grep -q "litellm" pyproject.toml 2>/dev/null; then
+  echo "FAIL: pyproject.toml 仍引用 litellm" >&2
+  fail=1
+fi
+
+# 5. 核心路径必须可 import
+# 自动探测 scrivai conda env Python(脚本必须在 scrivai env 内才能 import scrivai)
+PYBIN="${CONDA_PREFIX:-/home/iomgaa/miniconda3/envs/scrivai}/bin/python"
+[ -x "$PYBIN" ] || PYBIN=python
+"$PYBIN" - <<'PY' || fail=1
+import sys
+try:
+    import scrivai
+    from scrivai import (
+        ExtractorPES, AuditorPES, GeneratorPES,
+        BasePES, ModelConfig,
+        run_evolution, promote, SkillVersionStore,
+    )
+    # LLMClient 不在顶层 __all__,从子模块导入验证
+    from scrivai.pes.llm_client import LLMClient
+    print(f"OK: scrivai core imports clean (symbols={len(scrivai.__all__)})")
+except Exception as e:
+    print(f"FAIL: scrivai import broken: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+
+if [ $fail -ne 0 ]; then
+  echo "" >&2
+  echo "=== M3a 发版验收 FAIL ===" >&2
+  exit 1
+fi
+echo "=== M3a 发版验收 PASS ==="

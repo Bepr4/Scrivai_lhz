@@ -19,13 +19,13 @@ OLD_SYMBOLS=(
   "FeedbackExample" "EvolutionConfig" "SkillsRootResolver"
 )
 # 豁免说明:
-# - "Project\b"    不扫 — 历史名称,当前无同名顶层类(EvolutionProposal 等非同源)
-# - "LLMClient\b"  不扫 — scrivai.pes.llm_client.LLMClient 是当前 SDK 封装
-# - "LLMResponse\b" 不扫 — scrivai.pes.llm_client.LLMResponse 是当前 SDK 返回数据类(名称复用)
-# - "EvolutionRun\b" 不扫 — EvolutionRunRecord / EvolutionRunConfig 是合法前缀
+# - "Project"       不扫 — 历史名称,当前无同名顶层类(EvolutionProposal 等非同源)
+# - "LLMClient"     不扫 — scrivai.pes.llm_client.LLMClient 是当前 SDK 封装
+# - "LLMResponse"   不扫 — scrivai.pes.llm_client.LLMResponse 是当前 SDK 返回数据类(名称复用)
+# - "EvolutionRun"  不扫 — EvolutionRunRecord / EvolutionRunConfig 是合法前缀
 
 for sym in "${OLD_SYMBOLS[@]}"; do
-  hits=$(git grep -l "\\b${sym}\\b" -- 'scrivai/**/*.py' 2>/dev/null | grep -v '^Reference/' || true)
+  hits=$(git grep -l "\\b${sym}\\b" -- 'scrivai/*.py' 'scrivai/**/*.py' 2>/dev/null || true)
   if [ -n "$hits" ]; then
     echo "FAIL: ${sym} 残留:" >&2
     echo "$hits" >&2
@@ -34,7 +34,7 @@ for sym in "${OLD_SYMBOLS[@]}"; do
 done
 
 # 2. 业务术语泄漏(scrivai 是通用库,不应含 GovDoc 场景词)
-leak=$(git grep -E "招标|政府采购|审核点|底稿|投标人" -- 'scrivai/**/*.py' 2>/dev/null | grep -v 'Reference/' || true)
+leak=$(git grep -E "招标|政府采购|审核点|底稿|投标人" -- 'scrivai/*.py' 'scrivai/**/*.py' 2>/dev/null || true)
 if [ -n "$leak" ]; then
   echo "FAIL: 业务术语泄漏到 scrivai/:" >&2
   echo "$leak" >&2
@@ -65,7 +65,6 @@ try:
     )
     # LLMClient 不在顶层 __all__,从子模块导入验证
     from scrivai.pes.llm_client import LLMClient
-    _ = LLMClient  # silence unused warning
     print(f"OK: scrivai core imports clean (symbols={len(scrivai.__all__)})")
 except Exception as e:
     print(f"FAIL: scrivai import broken: {e}", file=sys.stderr)

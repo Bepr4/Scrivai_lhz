@@ -159,11 +159,12 @@ from scrivai import (
     # Trajectory
     TrajectoryRecord, PhaseRecord, FeedbackRecord,
 
-    # Evolution
-    EvolutionConfig, EvolutionRun, FeedbackExample,
+    # Evolution(M2 自研,详见 §4.6)
+    FailureSample, SkillVersion, EvolutionProposal,
+    EvolutionScore, EvolutionRunRecord, EvolutionRunConfig,
 
     # Protocol
-    Library, WorkspaceManager, Evaluator, SkillsRootResolver,
+    Library, WorkspaceManager,
 
     # qmd re-export
     ChunkRef, SearchResult, CollectionInfo,

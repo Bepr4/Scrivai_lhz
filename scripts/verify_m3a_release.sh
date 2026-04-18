@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # M3a 发版前 deprecation 验收脚本。
 # 参考 docs/TD.md M3 "Deprecation 验收清单"。
-# 使用: bash scripts/verify_m3a_release.sh
+# 使用: conda activate scrivai && bash scripts/verify_m3a_release.sh
 # 退出码: 0 = 全部通过;非 0 = 有残留,stderr 打印明细
 
 set -u  # 未定义变量视为错误(-e 会在 grep 无匹配时过早退出)
@@ -33,6 +33,14 @@ for sym in "${OLD_SYMBOLS[@]}"; do
   fi
 done
 
+# 2a. litellm 和其他 M0 前符号不应出现在 examples/ 或 README / CHANGELOG 里
+doc_leak=$(git grep -l -E "\\blitellm\\b|\\bGenerationEngine\\b|\\bAuditEngine\\b|\\bLLM_API_KEY\\b" -- 'examples/*' 'README.md' 'examples/README.md' 'CHANGELOG.md' 2>/dev/null || true)
+if [ -n "$doc_leak" ]; then
+  echo "FAIL: examples/ 或主文档仍引用 M0 前符号:" >&2
+  echo "$doc_leak" >&2
+  fail=1
+fi
+
 # 2. 业务术语泄漏(scrivai 是通用库,不应含 GovDoc 场景词)
 leak=$(git grep -E "招标|政府采购|审核点|底稿|投标人" -- 'scrivai/*.py' 'scrivai/**/*.py' 2>/dev/null || true)
 if [ -n "$leak" ]; then
@@ -54,7 +62,10 @@ if grep -q "litellm" pyproject.toml 2>/dev/null; then
 fi
 
 # 5. 核心路径必须可 import
-python - <<'PY' || fail=1
+# 自动探测 scrivai conda env Python(脚本必须在 scrivai env 内才能 import scrivai)
+PYBIN="${CONDA_PREFIX:-/home/iomgaa/miniconda3/envs/scrivai}/bin/python"
+[ -x "$PYBIN" ] || PYBIN=python
+"$PYBIN" - <<'PY' || fail=1
 import sys
 try:
     import scrivai

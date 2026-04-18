@@ -33,10 +33,10 @@ from typing import Any
 # examples 不是 package(无 __init__.py),把 examples/ 加入 sys.path 后走相对模块路径
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from data.simple_template import build_template  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from data.simple_template import build_template  # noqa: E402
 from scrivai import (  # noqa: E402
     GeneratorPES,
     ModelConfig,

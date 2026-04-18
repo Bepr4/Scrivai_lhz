@@ -7,7 +7,8 @@
 - 路径通过 --db 参数传入,不假设全局 DB
 
 用法:
-    python examples/data/seed_demo_feedback.py --db /tmp/scrivai-examples/evolution-demo/trajectory.db
+    python examples/data/seed_demo_feedback.py \\
+        --db /tmp/scrivai-examples/evolution-demo/trajectory.db
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ import sqlite3
 from pathlib import Path
 
 from scrivai.trajectory.store import TrajectoryStore
-
 
 # 所有样本都用 {"items": [...]} 形状,与 _overlap_score 评分器严格匹配
 _FIXTURES = [

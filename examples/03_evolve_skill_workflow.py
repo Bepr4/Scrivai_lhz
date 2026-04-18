@@ -239,7 +239,9 @@ async def main() -> None:
 
     # ── 5/5 模拟专家决策 ───────────────────────────────────────────
     try:
-        ans = input("\n是否 promote 这个候选到 examples/data/demo-skill-project/skills/? [y/N] ").strip().lower()
+        ans = input(
+            "\n是否 promote 这个候选到 examples/data/demo-skill-project/skills/? [y/N] "
+        ).strip().lower()
     except EOFError:
         ans = "n"
 

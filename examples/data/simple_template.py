@@ -31,6 +31,7 @@ def build_template(out_path: Path) -> Path:
 if __name__ == "__main__":
     import sys
 
-    target = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/scrivai-examples/simple_template.docx")
+    default_target = "/tmp/scrivai-examples/simple_template.docx"
+    target = Path(sys.argv[1] if len(sys.argv) > 1 else default_target)
     path = build_template(target)
     print(f"[OK] 模板已生成: {path}")

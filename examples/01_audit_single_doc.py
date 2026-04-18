@@ -119,7 +119,7 @@ async def main() -> None:
     for f in output.findings:
         print(f"  {f.checkpoint_id} {f.verdict}: {f.reasoning[:80]}")
     print(f"\n总结: {output.summary}")
-    print(f"\n归档目录: {workspace.root_dir}")
+    print(f"\nWorkspace 目录(含 working/output/logs 可 inspect): {workspace.root_dir}")
 
 
 if __name__ == "__main__":

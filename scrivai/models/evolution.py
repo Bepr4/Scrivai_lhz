@@ -1,103 +1,120 @@
-"""Evolution(EvoSkill 进化)相关 pydantic + Protocol。
+"""Evolution 数据模型(M2 自研,替代 M0 EvoSkill 兼容层)。
 
-参考 docs/design.md §4.6。
-- EvolutionConfig / EvolutionRun / FeedbackExample:M0 定义,
-  M2 由 EvolutionTrigger / run_evolution 消费
-- Evaluator Protocol:业务层实现的评分函数协议
-- SkillsRootResolver Protocol:EvoSkill 的 skills 根目录适配层(M2 实现两个内置)
-
-职责边界:SkillsRootResolver 只准备路径,**不**负责切换 cwd(由 run_evolution 自行处理)。
+参考:
+- docs/superpowers/specs/2026-04-17-scrivai-m2-design.md §4.1
+- docs/design.md §4.6(M2 合入时同步重写)
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Optional, Protocol, runtime_checkable
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+SkillVersionStatus = Literal["draft", "evaluated", "promoted", "rejected"]
+EvolutionRunStatus = Literal["running", "completed", "failed", "budget_exceeded"]
 
-class FeedbackExample(BaseModel):
-    """从 FeedbackRecord 构建进化评测集的中间结构。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    question: str = Field(..., description="JSON 字符串:{'task_prompt': ..., 'input_summary': ...}")
-    ground_truth: str = Field(..., description="final_output 的规范化 JSON 字符串")
-    category: str = Field(..., description="分类标签,默认 pes_name,业务可自定义")
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="透传 review_policy_version/source/confidence/run_id",
-    )
+EvaluatorFn = Callable[[str, str, str], float]
+"""业务层提供的评分函数签名:(question, predicted, ground_truth) -> float。"""
 
 
-class EvolutionConfig(BaseModel):
-    """run_evolution 的输入配置。"""
+class FailureSample(BaseModel):
+    """单条失败样本(来自 trajectory.feedback)。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    task_name: str
-    model: str
-    mode: Literal["greedy", "pareto"] = "greedy"
-    eval_dataset_csv: Path
-    max_iterations: int = 5
-    no_improvement_limit: int = 2
-    concurrency: int = 4
-    train_ratio: float = 0.7
-    val_ratio: float = 0.3
-    tolerance: float = 0.01
-    selection_strategy: Literal["top_k", "pareto_frontier"] = "top_k"
-    cache_enabled: bool = True
-    cache_dir: Optional[Path] = None
-    project_root: Path = Field(..., description="给 SkillsRootResolver 用")
+    feedback_id: int
+    run_id: str
+    task_prompt: str
+    question: str
+    draft_output_str: str
+    ground_truth_str: str
+    baseline_score: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    trajectory_summary: dict[str, str] = Field(default_factory=dict)
+    data_inputs: dict[str, Path] = Field(default_factory=dict)
 
 
-class EvolutionRun(BaseModel):
-    """run_evolution 的输出。"""
+class SkillVersion(BaseModel):
+    """版本 DAG 节点。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    best_score_base: float
-    best_score_evolved: float
-    promoted_branch: Optional[str] = Field(
-        default=None, description="最高分超过 base 时填,例 'evo/2026-04-15-123-idx2'"
-    )
-    candidate_branches: list[str] = Field(default_factory=list)
+    version_id: str
+    pes_name: str
+    skill_name: str
+    parent_version_id: Optional[str]
+    content_snapshot: dict[str, str]
+    content_diff: str
+    change_summary: str
+    status: SkillVersionStatus = "draft"
+    created_at: datetime
+    promoted_at: Optional[datetime] = None
+    created_by: str
+
+
+class EvolutionProposal(BaseModel):
+    """Proposer 单次产出的候选(未入库,未打分)。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_content_snapshot: dict[str, str]
+    change_summary: str
+    reasoning: str
+
+
+class EvolutionScore(BaseModel):
+    """候选在 hold-out 上的评分。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version_id: str
+    score: float = Field(ge=0.0, le=1.0)
+    per_sample_scores: list[float]
+    hold_out_size: int
+    llm_calls_consumed: int
+    evaluated_at: datetime
+
+
+class EvolutionRunRecord(BaseModel):
+    """一次 run_evolution 调用的完整记录。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evo_run_id: str
+    pes_name: str
+    skill_name: str
+    config_snapshot: dict[str, Any]
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    status: EvolutionRunStatus = "running"
+    baseline_version_id: str
+    baseline_score: float
+    best_version_id: Optional[str] = None
+    best_score: Optional[float] = None
+    candidate_version_ids: list[str] = Field(default_factory=list)
+    llm_calls_used: int = 0
     iterations_history: list[dict[str, Any]] = Field(default_factory=list)
+    error: Optional[str] = None
 
 
-@runtime_checkable
-class Evaluator(Protocol):
-    """业务层提供的评分函数。
+class EvolutionRunConfig(BaseModel):
+    """run_evolution 输入配置。"""
 
-    返回 0.0 - 1.0,1.0 表示 predicted 与 ground_truth 完全一致。
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    def __call__(
-        self,
-        question: str,
-        predicted: str,
-        ground_truth: str,
-    ) -> float: ...
-
-
-@runtime_checkable
-class SkillsRootResolver(Protocol):
-    """解析 EvoSkill 需要看到的 skills 根目录。
-
-    职责范围(单一职责):
-    - __enter__: 准备并返回路径 P,使得 P/.claude/skills/ 存在且指向正确内容
-    - __exit__: 清理 __enter__ 创建的临时资源(symlink / 临时目录等)
-
-    不负责:
-    - 切换进程的工作目录(由 run_evolution 自行处理)
-    - 启动 EvoSkill 进程或传参
-    """
-
-    def __enter__(self) -> Path:
-        """返回路径 P,P/.claude/skills/ 可被 EvoSkill 读到。"""
-        ...
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """清理 __enter__ 创建的临时 symlink / 目录。"""
-        ...
+    pes_name: str
+    skill_name: str
+    max_iterations: int = 5
+    n_proposals_per_iter: int = 3
+    frontier_size: int = 3
+    no_improvement_limit: int = 2
+    max_llm_calls: int = 500
+    hold_out_ratio: float = Field(default=0.3, ge=0.1, le=0.5)
+    min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    failure_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    proposer_model: str = "glm-5.1"
+    random_seed: int = 42

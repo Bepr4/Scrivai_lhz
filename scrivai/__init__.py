@@ -1,6 +1,7 @@
 """Scrivai v3 — Claude Agent 编排框架。
 
 完整 Public API(M0.75 冻结):参考 docs/design.md §4.1。
+M2 Evolution API:参考 docs/superpowers/specs/2026-04-17-scrivai-m2-design.md。
 """
 
 # qmd re-export(身份相等,非副本)
@@ -9,8 +10,16 @@ from qmd import ChunkRef, CollectionInfo, SearchResult
 # 预置 PES(M0.75 占位,M1 实现)
 from scrivai.agents import AuditorPES, ExtractorPES, GeneratorPES
 
-# Evolution 占位(M2 实现)
-from scrivai.evolution import EvolutionTrigger, run_evolution
+# Evolution(M2 自研 Skill 进化)
+from scrivai.evolution import (
+    CandidateEvaluator,
+    EvolutionTrigger,
+    LLMCallBudget,
+    Proposer,
+    SkillVersionStore,
+    promote,
+    run_evolution,
+)
 
 # IO
 from scrivai.io import (
@@ -28,15 +37,16 @@ from scrivai.knowledge import (
     build_libraries,
     build_qmd_client_from_config,
 )
+from scrivai.models.evolution import (
+    EvolutionProposal,
+    EvolutionRunConfig,
+    EvolutionRunRecord,
+    EvolutionScore,
+    FailureSample,
+    SkillVersion,
+)
 
 # Models — pydantic
-from scrivai.models.evolution import (
-    Evaluator,
-    EvolutionConfig,
-    EvolutionRun,
-    FeedbackExample,
-    SkillsRootResolver,
-)
 from scrivai.models.knowledge import Library, LibraryEntry
 from scrivai.models.pes import (
     CancelHookContext,
@@ -116,12 +126,6 @@ __all__ = [
     "TrajectoryRecord",
     "PhaseRecord",
     "FeedbackRecord",
-    # Evolution
-    "EvolutionConfig",
-    "EvolutionRun",
-    "FeedbackExample",
-    "Evaluator",
-    "SkillsRootResolver",
     # 抽象类
     "BasePES",
     "HookManager",
@@ -142,8 +146,6 @@ __all__ = [
     "TrajectoryStore",
     "TrajectoryRecorderHook",
     "PhaseLogHook",
-    "EvolutionTrigger",
-    "run_evolution",
     # IO
     "docx_to_markdown",
     "doc_to_markdown",
@@ -160,4 +162,19 @@ __all__ = [
     "PhaseOutcome",
     # Hook 装饰器
     "hookimpl",
+    # Evolution(M2)
+    "run_evolution",
+    "promote",
+    "CandidateEvaluator",
+    "EvolutionTrigger",
+    "LLMCallBudget",
+    "Proposer",
+    "SkillVersionStore",
+    # Evolution 数据模型
+    "EvolutionProposal",
+    "EvolutionRunConfig",
+    "EvolutionRunRecord",
+    "EvolutionScore",
+    "FailureSample",
+    "SkillVersion",
 ]

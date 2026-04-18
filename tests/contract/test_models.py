@@ -104,20 +104,6 @@ def test_trajectory_module_importable() -> None:
         assert cls is not None
 
 
-def test_evolution_module_importable() -> None:
-    """scrivai.models.evolution 可导入全部声明类。"""
-    from scrivai.models.evolution import (
-        Evaluator,
-        EvolutionConfig,
-        EvolutionRun,
-        FeedbackExample,
-        SkillsRootResolver,
-    )
-
-    for cls in (EvolutionConfig, EvolutionRun, FeedbackExample, Evaluator, SkillsRootResolver):
-        assert cls is not None
-
-
 # ────── PESRun.status Literal ──────
 
 
@@ -311,44 +297,3 @@ def test_library_protocol_runtime_checkable() -> None:
     assert isinstance(FakeLib(), Library)
 
 
-def test_evaluator_protocol_runtime_checkable() -> None:
-    from scrivai.models.evolution import Evaluator
-
-    class FakeEval:
-        def __call__(self, question: str, predicted: str, ground_truth: str) -> float:
-            return 1.0
-
-    assert isinstance(FakeEval(), Evaluator)
-
-
-def test_skills_root_resolver_protocol_runtime_checkable() -> None:
-    from scrivai.models.evolution import SkillsRootResolver
-
-    class FakeResolver:
-        def __enter__(self) -> Path:
-            return Path("/tmp")
-
-        def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-            pass
-
-    assert isinstance(FakeResolver(), SkillsRootResolver)
-
-
-def test_skills_root_resolver_docstring_no_chdir() -> None:
-    """SkillsRootResolver Protocol 与方法 docstring 不含 chdir。
-
-    职责边界由 docstring 明确:Resolver 不切 cwd,chdir 由 run_evolution 自己做。
-    """
-    from scrivai.models.evolution import SkillsRootResolver
-
-    docs = " ".join(
-        filter(
-            None,
-            [
-                SkillsRootResolver.__doc__,
-                SkillsRootResolver.__enter__.__doc__,
-                SkillsRootResolver.__exit__.__doc__,
-            ],
-        )
-    )
-    assert "chdir" not in docs.lower()

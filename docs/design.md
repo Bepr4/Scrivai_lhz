@@ -159,11 +159,12 @@ from scrivai import (
     # Trajectory
     TrajectoryRecord, PhaseRecord, FeedbackRecord,
 
-    # Evolution
-    EvolutionConfig, EvolutionRun, FeedbackExample,
+    # Evolution(M2 自研,详见 §4.6)
+    FailureSample, SkillVersion, EvolutionProposal,
+    EvolutionScore, EvolutionRunRecord, EvolutionRunConfig,
 
     # Protocol
-    Library, WorkspaceManager, Evaluator, SkillsRootResolver,
+    Library, WorkspaceManager,
 
     # qmd re-export
     ChunkRef, SearchResult, CollectionInfo,
@@ -833,201 +834,109 @@ result = await pes.run(task_prompt="...")
 # 全部 phases / turns / tool_calls 已落盘
 ```
 
-### 4.6 Evolution —— Skill 进化
+### 4.6 Evolution —— Skill 进化(M2 自研实现)
 
-进化机制的核心思想:**Agent 不变,只优化 SKILL.md 的措辞**。累积到足量"初稿 vs 定稿"配对后,业务层手动触发一轮进化。
+进化机制的核心思想:**Agent 不变,只优化 SKILL.md 的措辞**。M2 自研方案**放弃 EvoSkill 兼容层**,改用 SQLite DAG + 真实 PES replay + Python SDK 控制台。详细设计见 `docs/superpowers/specs/2026-04-17-scrivai-m2-design.md`。
 
-#### 4.6.1 FeedbackExample —— 进化数据的中间形态
+#### 4.6.1 数据模型(`scrivai.models.evolution`)
 
-```python
-class FeedbackExample(BaseModel):
-    """从 FeedbackRecord 构建进化评测集的中间结构。"""
-    question: str          # JSON 字符串:{"task_prompt": ..., "input_summary": ...}
-    ground_truth: str      # final_output 的规范化 JSON 字符串
-    category: str          # 分类标签,默认 pes_name,业务可自定义
-    metadata: dict = Field(default_factory=dict)   # 透传:review_policy_version / source / confidence / run_id 等
-```
+- `FailureSample` —— 单条失败样本,含 trajectory 摘要
+- `SkillVersion` —— 版本 DAG 节点(snapshot + diff 双存)
+- `EvolutionProposal` —— Proposer 单次产出
+- `EvolutionScore` —— hold-out 评分
+- `EvolutionRunRecord` —— 一次 run_evolution 完整记录
+- `EvolutionRunConfig` —— 运行配置
 
-**`question` 生成规则**(确定性、可重复、结构化——避免魔法分隔符):
+M0 预留的 `FeedbackExample / EvolutionConfig / EvolutionRun / Evaluator / SkillsRootResolver` **已全部删除**(M2 放弃 EvoSkill 兼容)。
 
-```python
-question = json.dumps(
-    {
-        "task_prompt": feedback.run.task_prompt,
-        "input_summary": feedback.input_summary,
-    },
-    ensure_ascii=False,
-    sort_keys=True,
-    separators=(",", ":"),
-)
-```
-
-消费者(Evaluator 实现 / Proposer 分析)**应当** `json.loads(question)` 解析两字段;**不应**把 question 当纯文本正则切分。
-
-**`ground_truth` 序列化规则**(避免每次训练数据漂移):
-```python
-ground_truth = json.dumps(
-    feedback.final_output,
-    ensure_ascii=False,
-    sort_keys=True,         # 字段按名排序
-    separators=(",", ":"),  # 无空格
-)
-```
-
-**`category` 默认值**:`pes_name`(`"extractor"` / `"auditor"` / `"generator"`);业务层可在 `build_eval_dataset` 传 `category_fn` 扩展(如 `"extractor:gov_tender"`)。注意 `category` 是 EvoSkill 做 train/val split 的分层依据,只用 `pes_name` 区分度可能不够——建议业务层按领域 / 文档类型等二级维度扩展。
-
-#### 4.6.2 EvolutionTrigger —— 连接 trajectory 与 EvoSkill
+#### 4.6.2 `EvolutionTrigger` —— 从 trajectory 拉反馈
 
 ```python
 from scrivai import EvolutionTrigger
 
 trigger = EvolutionTrigger(
-    trajectory_store=store,
-    pes_name="extractor",
-    min_feedback_pairs=10,     # 少于这个数建议不触发
-    min_confidence=0.7,        # 仅采纳 confidence >= 阈值的 feedback
+    trajectory_store=store, pes_name="extractor", skill_name="available-tools",
+    evaluator_fn=my_evaluator, min_confidence=0.7, failure_threshold=0.5,
 )
-
-# 业务层手动检查
-if trigger.has_enough_data():
-    # 自动从 FeedbackRecord 构建 EvoSkill 格式的评测集
-    eval_dataset_csv = trigger.build_eval_dataset(
-        output_path="~/.scrivai/eval/extractor_2026-04-15.csv",
-        category_fn=lambda rec: f"extractor:{rec.metadata.get('domain', 'default')}",
-    )
-    # CSV 列:question, ground_truth, category
-    # 每行对应一个 FeedbackExample
+if trigger.has_enough_data(min_samples=10):
+    train, hold_out = trigger.collect_failures(hold_out_ratio=0.3, random_seed=42)
 ```
 
-**`EvolutionTrigger.build_eval_dataset` 语义**:
+- 返回 `(train_failures, hold_out_samples)` 两个 `list[FailureSample]`
+- 每条样本 `.trajectory_summary` 保留 plan/execute/summarize 响应(各截断 800 字)
 
-1. 从 store 拉 `FeedbackRecord`(可选 filter:pes_name、min_confidence、review_policy_version)
-2. 对每条构建 `FeedbackExample`(按上述 question / ground_truth 规则)
-3. 按 `category_fn(record) -> str` 贴标签(默认 `pes_name`)
-4. 去重(同 question+ground_truth 只保留最新一条)
-5. 写 CSV(列顺序固定:question / ground_truth / category)
-
-契约保证:同一 FeedbackRecord 集合,**相同输入总产出字节相同的 CSV**。
-
-#### 4.6.3 `run_evolution` —— EvoSkill 五阶段
+#### 4.6.3 `run_evolution` —— 自研进化循环
 
 ```python
-from scrivai import EvolutionConfig, run_evolution, Evaluator
+from scrivai import run_evolution, EvolutionRunConfig, build_workspace_manager
 
-class IoUEvaluator:
-    """(question, predicted, ground_truth) -> float。对齐 EvoSkill scorer 协议。"""
-    def __call__(self, question: str, predicted: str, ground_truth: str) -> float:
-        pred = json.loads(predicted)
-        gt = json.loads(ground_truth)
-        return _compute_iou(pred["items"], gt["items"])
-
-config = EvolutionConfig(
-    task_name="extractor_evolution_2026-04-15",
-    model="claude-sonnet-4-6",
-    mode="greedy",              # or "pareto"
-    eval_dataset_csv=Path("~/.scrivai/eval/extractor_2026-04-15.csv"),
-    max_iterations=5,
-    no_improvement_limit=2,
-    concurrency=4,
-    train_ratio=0.7,
-    val_ratio=0.3,
-    tolerance=0.01,
-    selection_strategy="top_k",
-    cache_enabled=True,
-    cache_dir=Path("~/.scrivai/cache/evolution"),
+record = await run_evolution(
+    config=EvolutionRunConfig(
+        pes_name="extractor", skill_name="available-tools",
+        max_iterations=5, n_proposals_per_iter=3, frontier_size=3,
+        no_improvement_limit=2, max_llm_calls=500,
+        hold_out_ratio=0.3, min_confidence=0.7, failure_threshold=0.5,
+        proposer_model="glm-5.1",
+    ),
+    trajectory_store=store,
+    workspace_mgr=build_workspace_manager(),
+    pes_factory=lambda name, ws: ExtractorPES(config=pes_cfg, model=model_cfg,
+                                               workspace=ws, runtime_context=...),
+    evaluator_fn=my_evaluator_fn,
+    source_project_root=Path("./"),
+    llm_client=LLMClient(model_cfg),
 )
-
-evo_run: EvolutionRun = await run_evolution(config=config, evaluator=IoUEvaluator())
-
-# evo_run 含：
-#   best_score_base:    基线分数
-#   best_score_evolved: 进化后最高分
-#   promoted_branch:    最高分的 git 分支名（例 "evo/2026-04-15-123-idx2"）
-#   candidate_branches: 所有候选分支列表
-#   iterations_history: 每轮迭代的详情
-
-if evo_run.promoted_branch:
-    print(f"推荐合并：git checkout {evo_run.promoted_branch} && 人工 PR → main")
 ```
 
-**五阶段机制**：
+**内部五阶段**(整体思路同 EvoSkill,但全部自研):
 
-1. **Base run**：main 分支当前 skills 跑整个 eval_dataset，记录每题得分
-2. **Proposer**：用 `config.model` 分析失败 trajectory，产出 N 条 SKILL.md 修改提议
-3. **Generator**：每条提议生成具体 SKILL.md diff，git commit 到 `evo/<timestamp>-<idx>` 分支
-4. **Evaluator**：每候选分支重新跑 eval_dataset → `Evaluator(q, pred, gt) -> float`
-5. **Frontier**：留 top-N 分支；最高分超过 base 时填入 `promoted_branch`
+1. **Baseline**:从 `source_project_root/skills/<skill_name>/` 读当前内容建 baseline version,在 hold_out 上评
+2. **Proposer**(单次 LLM call 产 N 个候选):输入 = 当前 SKILL.md + failures + rejected history
+3. **Candidate save**:入库(snapshot + unified diff + change_summary)
+4. **Evaluator**:为每个候选建临时 project_root(copytree + overwrite target skill),用真实 PES replay hold_out
+5. **Frontier**:贪心 top-K 维护;超 `no_improvement_limit` 无提升则 break
+
+**输出** `EvolutionRunRecord` 含:
+- `baseline_version_id` / `baseline_score`
+- `best_version_id` / `best_score`(若超过 baseline,否则为 `None`)
+- `candidate_version_ids`(所有候选 id)
+- `iterations_history`(逐轮详情)
+- `status`:`running / completed / failed / budget_exceeded`
+
+#### 4.6.4 `promote` —— 手动上线候选
+
+```python
+from scrivai import promote
+
+promote(
+    version_id="extractor:available-tools:...",
+    source_project_root=Path("./"),
+)
+# → 备份当前 skills/available-tools/ 到 skills/available-tools/.backup/evo-<ts>/
+# → 把 version.content_snapshot 写入 skills/available-tools/
+# → 更新 SkillVersion.status = 'promoted'
+```
 
 **安全约束**:
-- 进化产物**只写 git 分支**,永不自动覆盖 `main`
-- 必须人工 `git checkout <branch>` 审查 SKILL.md diff + 跑回归测试后才 PR 合并
+- 进化期间**不写**主仓 `skills/`;只写 `~/.scrivai/evolution.db` + 临时目录
+- `promote` 是**Python SDK**(无 CLI),业务方显式调用
+- 默认 `backup=True`;备份路径在 `skills/<name>/.backup/evo-<ts>/`,可回退
 
-#### 4.6.4 `SkillsRootResolver` Protocol —— skills 路径适配层
+#### 4.6.5 LLM 调用预算
 
-EvoSkill **硬编码**从 `<cwd>/.claude/skills/` 读写。Scrivai 提供 `SkillsRootResolver` Protocol 作为适配层,消除业务层对 cwd+symlink 的脆弱耦合。
+`LLMCallBudget(limit=500)` 由 runner 自动创建并传给 Proposer / Evaluator。超限抛 `BudgetExceededError`,runner 捕获后把 `status` 设 `budget_exceeded` 并落盘。
 
-```python
-@runtime_checkable
-class SkillsRootResolver(Protocol):
-    """解析 EvoSkill 需要看到的 skills 根目录。
+#### 4.6.6 与原 EvoSkill 方案的差异
 
-    **职责范围**(单一职责):
-    - `__enter__`:准备并返回一个路径 P,使得 `P/.claude/skills/` 存在且指向正确内容
-    - `__exit__`:清理 `__enter__` 创建的临时资源(symlink / 临时目录等)
-
-    **不负责**:
-    - 切换进程的 `cwd`——这由 `run_evolution` 自己做,resolver 不 `os.chdir`
-    - 启动 EvoSkill 进程、传参
-    """
-
-    def __enter__(self) -> Path:
-        """返回一个路径 P,`P/.claude/skills/` 可被 EvoSkill 读到。
-
-        P **可以**等于业务项目根(不建临时目录),也**可以**是 `$TMPDIR/scrivai-evo-<ts>/`。
-        """
-        ...
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """清理 `__enter__` 创建的临时 symlink / 目录。**不**涉及 cwd。"""
-        ...
-```
-
-**M0 预留 + M2 实现**:
-
-- **M0**:只在 `scrivai/models/evolution.py` 定义 `SkillsRootResolver` Protocol;`run_evolution` 实现留空
-- **M2**:Scrivai 提供两个内置实现
-  - `DefaultSkillsRootResolver(project_root, skills_subdir="skills")`:在临时目录建 `.claude/skills/` 指向 `project_root/skills/` 的 symlink;退出时清理
-  - `CopySkillsRootResolver(project_root)`:不用 symlink,`shutil.copytree` 到临时 `.claude/skills/`(NFS/Windows 场景)
-- 业务层可自定义实现(如从 S3 拉、从 Docker volume 挂)
-
-业务层**不再**感知"建 git 追踪 symlink"这个约束;由 resolver 内部处理。
-
-```python
-# run_evolution 内部(伪代码)
-async def run_evolution(config, evaluator, resolver=None):
-    resolver = resolver or DefaultSkillsRootResolver(config.project_root)
-    with resolver as skills_path:
-        original_cwd = os.getcwd()
-        os.chdir(skills_path.parent.parent)   # 让 <cwd>/.claude/skills/ 可达
-        try:
-            return await _invoke_evoskill_loop(config, evaluator)
-        finally:
-            os.chdir(original_cwd)
-```
-
-#### 4.6.5 Evaluator 协议
-
-```python
-@runtime_checkable
-class Evaluator(Protocol):
-    def __call__(
-        self,
-        question: str,        # FeedbackExample.question
-        predicted: str,       # Agent 最终 output.json(字符串化,同 ground_truth 规范)
-        ground_truth: str,    # FeedbackExample.ground_truth
-    ) -> float:               # 0.0 - 1.0
-        ...
-```
+| 维度 | 原 M2(EvoSkill) | M2 自研 |
+|---|---|---|
+| 数据来源 | CSV 评测集 | 直接查 trajectory.db |
+| 版本存储 | git 分支 | SQLite DAG(独立 evolution.db) |
+| cwd 耦合 | 硬编码 `.claude/skills/`(需 SkillsRootResolver 胶带) | 临时 project_root → workspace copytree |
+| Base agent | 内置通用 | **重跑真实 ExtractorPES / AuditorPES / GeneratorPES** |
+| 进化类型 | skill_only / prompt_only | FIX(MVP);DERIVED/CAPTURED 延到 M3 |
+| Promote | git checkout | `scrivai.evolution.promote()` |
+| 依赖 | dspy/GEPA/git | 零新依赖 |
 
 ### 4.7 Knowledge Library
 

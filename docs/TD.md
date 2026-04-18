@@ -492,6 +492,8 @@ M0 按依赖拓扑拆为 **4 个独立可验证的子里程碑**(M0 / M0.25 / M0
 - **契约测试**:`tests/contract/test_evolution_stubs.py`
 - **估时**:0.3d
 
+> **实施偏离(2026-04-17,M2)**:M2 放弃 EvoSkill 路线。`SkillsRootResolver` / `EvolutionConfig` / `EvolutionRun` / `FeedbackExample` / `Evaluator` 全部删除,不再保留占位。M2 自研模块走"临时 project_root"机制,见 `docs/superpowers/specs/2026-04-17-scrivai-m2-design.md`。
+
 **M0 系列 DoD 汇总**(拆分为 M0 / M0.25 / M0.5 / M0.75 四个独立可验证子里程碑,详见本章节开头的"里程碑总览"与子里程碑说明):T0.1 - T0.18 全完成;`tests/contract/` 全绿(用 MockPES + FakeQmd);I0 集成节点通过。
 
 ---
@@ -638,131 +640,84 @@ M0 按依赖拓扑拆为 **4 个独立可验证的子里程碑**(M0 / M0.25 / M0
 
 ---
 
-## M2:EvoSkill + 并发 + 稳定性(Week 7-8)
+## M2:Skill Evolution 自研(Week 7-8)
 
-### T2.1 `scrivai/evolution/` 数据模型与 Protocol 完善
+**主题**:自研 skill 进化模块替换原 EvoSkill 集成(`docs/superpowers/specs/2026-04-17-scrivai-m2-design.md`)。独立 SQLite DAG,真实 PES replay,Python SDK 控制台。
 
-- **DoD**(M0 T0.18 已预留类型,M2 此处完善和实现):
-  - `EvolutionConfig`:`task_name / model / mode / eval_dataset_csv / max_iterations / no_improvement_limit / concurrency / train_ratio / val_ratio / tolerance / selection_strategy / cache_enabled / cache_dir / project_root`(最后一项给 SkillsRootResolver 用)
-  - `EvolutionRun`:`best_score_base / best_score_evolved / promoted_branch / candidate_branches / iterations_history`
-  - `FeedbackExample`:`question / ground_truth / category / metadata`
-  - `Evaluator` Protocol:`(question: str, predicted: str, ground_truth: str) -> float`
-  - 字节级匹配设计文档 §4.6
-- **优先级**:P0
-- **依赖**:M1, T0.18
-- **估时**:0.5d
-
-### T2.2 `EvolutionTrigger` 从 trajectory 构建 eval_dataset
+### T2.1 数据模型 + SQL schema + SkillVersionStore
 
 - **DoD**:
-  - `EvolutionTrigger(store, pes_name, min_feedback_pairs, min_confidence=0.7)`
-  - `.has_enough_data() -> bool`(按 `min_feedback_pairs` 和 `min_confidence` 筛后计数)
-  - `.build_eval_dataset(output_path, category_fn=None) -> Path`
-    - 从 `store.get_feedback_pairs(pes_name, min_confidence)` 拉所有 pairs
-    - 对每条 pair 构建 `FeedbackExample`:
-      - `question = json.dumps({"task_prompt": rec.run.task_prompt, "input_summary": rec.input_summary}, ensure_ascii=False, sort_keys=True, separators=(",",":"))` (**结构化 JSON,不用魔法分隔符**)
-      - `ground_truth = json.dumps(rec.final_output, ensure_ascii=False, sort_keys=True, separators=(",",":"))`
-      - `category = category_fn(rec) if category_fn else rec.run.pes_name`
-      - `metadata = {"run_id": rec.run_id, "review_policy_version": ..., "source": ..., "confidence": ...}`
-    - 去重(同 question+ground_truth 保留最新)
-    - 写 CSV(列顺序固定:`question / ground_truth / category`)
-  - 契约测试:
-    - `test_question_is_valid_json`:`json.loads(row["question"])` 得 `{"task_prompt":..., "input_summary":...}`
-    - 模拟 15 条 feedback → build CSV → 验证列 + 行数 + 去重
-    - feedback 不足 → `has_enough_data() == False`
-    - `min_confidence=0.9` 筛掉 confidence=0.5 的条目
-    - **字节级可重复性**:相同输入产出相同 CSV(hash 比对)
-    - `test_roundtrip_question`:`task_prompt` 含 `---INPUT---` 等特殊字符也能正确解析
+  - 删 M0 遗留的 `FeedbackExample / EvolutionConfig / EvolutionRun / Evaluator / SkillsRootResolver`
+  - 新增 6 个 pydantic 模型(FailureSample / SkillVersion / EvolutionProposal / EvolutionScore / EvolutionRunRecord / EvolutionRunConfig)
+  - `~/.scrivai/evolution.db` 3 表 schema(skill_versions / evolution_runs / evolution_scores)
+  - `SkillVersionStore` CRUD + `get_baseline()` 自动从 `source_project_root` 读
+  - 合约测试:`test_evolution_models.py` + `test_evolution_store.py`
 - **优先级**:P0
-- **依赖**:T2.1, T0.7
-- **契约测试**:`tests/contract/test_evolution_trigger.py`
-- **估时**:1d
+- **依赖**:M1.5c
+- **估时**:1.5d
 
-### T2.2b `SkillsRootResolver` 内置实现(M0 预留的 Protocol 在此落地)
+### T2.2 `LLMCallBudget` + `EvolutionTrigger`
 
 - **DoD**:
-  - **Resolver 只管路径,不管 cwd**(与 design §4.6.4 职责边界一致):
-    - `DefaultSkillsRootResolver(project_root, skills_subdir="skills")`:建临时目录 `$TMPDIR/scrivai-evo-<ts>/`,在其中建 `.claude/skills → project_root/skills/` symlink;退出时 rmtree 临时目录
-    - `CopySkillsRootResolver(project_root, skills_subdir="skills")`:同样建临时目录,但用 `shutil.copytree` 而非 symlink(NFS / Windows 场景)
-    - **两个实现都不 `os.chdir`**
-  - `run_evolution(config, evaluator, resolver=None)` 流程:
-    - 默认 `resolver = DefaultSkillsRootResolver(config.project_root)`
-    - `with resolver as skills_root:` 进入上下文拿路径 P
-    - `original_cwd = os.getcwd(); os.chdir(P)` ← **chdir 由 run_evolution 做**
-    - `try: await _invoke_evoskill_loop(...) finally: os.chdir(original_cwd)`
-  - 契约测试:
-    - `test_default_resolver_symlink_exists_in_context`
-    - `test_default_resolver_cleanup_on_exit`
-    - `test_copy_resolver_no_symlinks`(验证临时目录产物不含 symlink)
-    - `test_resolver_does_not_chdir`(进入 `__enter__` 前后 os.getcwd() 不变)
-    - `test_run_evolution_restores_cwd`(run_evolution 调用前后 cwd 不变)
-    - `test_run_evolution_cwd_during_loop`(loop 期间 cwd == resolver 返回的 P)
+  - `LLMCallBudget(limit=500)`,超限抛 `BudgetExceededError`
+  - `EvolutionTrigger(store, pes_name, skill_name, evaluator_fn, ...).collect_failures()` 固定 seed 可重复
+  - `trajectory_summary` 按阶段截断 800 字
+  - 合约测试 2 份
 - **优先级**:P0
 - **依赖**:T2.1
-- **契约测试**:`tests/contract/test_skills_resolver.py`
 - **估时**:1d
 
-### T2.3 `run_evolution` 接通 EvoSkill
+### T2.3 `Proposer`
 
 - **DoD**:
-  - `async def run_evolution(config: EvolutionConfig, evaluator: Evaluator, resolver: SkillsRootResolver | None = None) -> EvolutionRun`
-  - 内部:`with resolver or DefaultSkillsRootResolver(config.project_root) as skills_path` → `os.chdir(skills_path.parent.parent)` → 调 EvoSkill 的 `LoopAgents`(参数对齐 T2.1) → finally 恢复 cwd
-  - 返回 EvolutionRun 含 `promoted_branch / candidate_branches / iterations_history`
-  - 五阶段全部走完(Base / Proposer / Generator / Evaluator / Frontier)
-  - 产物只到 git 分支 `evo/<timestamp>-<idx>`,**永不自动写 main**
-  - 业务层**不再需要**在项目根建 `.claude/skills → ../skills` 的 git symlink(由 resolver 内部处理)
-  - 契约测试:用 mini 评测集(3 条)验证流程能跑出至少 1 个候选分支
+  - 单次 LLM call 产 N 个 EvolutionProposal(JSON 模式)
+  - prompt 含 4 要素:当前 SKILL.md + 失败样本 + rejected history + 格式要求
+  - 非合法 JSON 抛 `ProposerError`
+  - 合约测试
 - **优先级**:P0
-- **依赖**:T2.1, T2.2b
-- **契约测试**:`tests/integration/test_run_evolution.py`
-- **估时**:2.5d
+- **依赖**:T2.2
+- **估时**:1d
 
-### T2.4 EvoSkill 在 fixture 上跑通
+### T2.4 `CandidateEvaluator`
 
 - **DoD**:
-  - 用 M1 积累的 trajectory + 手动编造 10 条 feedback pairs
-  - 业务侧提供 IoU `Evaluator`
-  - `EvolutionTrigger` → `build_eval_dataset` → `run_evolution`
-  - 至少 1 个候选分支;若分数高于 base 给出 `promoted_branch`
-  - 输出报告到 `tests/outputs/integration/m2_evolution_<timestamp>.md`
+  - 临时 project_root 机制(copytree + overwrite target skill)
+  - 每 sample 消耗 3 budget
+  - 单 sample 失败不阻塞其他 sample(score=0)
+  - `BudgetExceededError` 向 runner 传播(非 per-sample 吞掉)
+  - 合约测试用 mock pes_factory 验证临时目录结构 + 候选 SKILL.md 注入
 - **优先级**:P0
 - **依赖**:T2.3
 - **估时**:1.5d
 
-### T2.5 并发压测
+### T2.5 `run_evolution` + `promote` + public API
 
 - **DoD**:
-  - PES execute 阶段允许 Agent 并发跑 tool(SDK 默认)
-  - 100 页文书 + 30 checkpoint 端到端 ≤ 10 分钟
-  - 失败率 ≤ 5%
-  - 归档 + trajectory 全部落盘正确
+  - runner 编排 baseline → 每轮 proposer → 每候选 evaluator → 前沿维护
+  - 贪心 top-K Frontier + `no_improvement_limit`
+  - `promote(version_id, ...)` 原子覆盖 skills/<name>/ + 自动备份
+  - `scrivai.__init__` re-export 新 API(13 符号)
+  - 合约测试 runner(mock 内部模块) + promote
 - **优先级**:P0
-- **依赖**:M1
+- **依赖**:T2.4
 - **估时**:1.5d
 
-### T2.6 TrajectoryStore 查询优化
+### T2.6 Mock feedback fixture + M2 E2E 集成测试
 
 - **DoD**:
-  - 加索引:`runs(pes_name, status)`、`turns(phase_id)`、`tool_calls(tool_name)`、`feedback(run_id)`
-  - `list_runs(pes_name=..., limit=50)` P95 < 50ms(10k 条)
-  - `get_feedback_pairs(pes_name)` P95 < 200ms(1k 条)
-  - 压测脚本放 `tests/perf/`
-- **优先级**:P1
-- **依赖**:T0.7
-- **估时**:0.8d
+  - `tests/fixtures/m2_evolution/seed_feedback.py` 造 30 条(幂等)
+  - `tests/integration/test_m2_evolution_cycle.py` 在真 GLM 下跑 2 轮 × 1 candidate
+  - LLM 调用 ≤ 100
+  - 输出 markdown 报告到 `tests/outputs/integration/`
+- **优先级**:P0
+- **依赖**:T2.5
+- **估时**:1.5d
 
-### T2.7 日志与可观察性
+**M2 DoD 汇总**:I2 通过;自研 evolution 模块完整;集成测试在 GLM 下跑完 ≤ 100 calls;删完 EvoSkill 预留。
 
-- **DoD**:
-  - phase 启动 / 结束打 usage(tokens、duration)
-  - 失败时记录原 prompt 前 200 字 + 错误堆栈
-  - `workspace/meta.json` 累积 phase 进度
-  - 统一走 loguru
-- **优先级**:P1
-- **依赖**:M1
-- **估时**:0.5d
+### 延后至 M3
 
-**M2 DoD 汇总**:I2 通过;EvoSkill 跑出候选分支;100 页压测达标。
+原 M2 的 T2.5(并发压测)/ T2.6(trajectory 查询优化)/ T2.7(observability)归入 M3。
 
 ---
 

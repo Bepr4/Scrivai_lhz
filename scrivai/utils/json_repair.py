@@ -311,5 +311,52 @@ def _remove_trailing_commas(text: str) -> str:
     return text
 
 
+_JSON_STRUCTURAL = set(':,}] \t\n\r')
+
+
 def _escape_inner_quotes(text: str) -> str:
-    return text
+    """Stage-4: 字符串值内未转义的双引号 → 转义。
+
+    前置条件:Stage-2 已将所有结构性引号归一为半角。
+    启发式:遇到字符串内的 " 时,检查紧随其后的字符是否为 JSON 结构字符。
+    若不是 → 此 " 是字符串内容,需转义为 \\"。
+    若是 → 此 " 是字符串闭合符。
+    """
+    result: list[str] = []
+    i = 0
+
+    while i < len(text):
+        ch = text[i]
+
+        if ch != '"':
+            result.append(ch)
+            i += 1
+            continue
+
+        # 遇到 " — 开始扫描字符串
+        result.append('"')
+        i += 1
+        while i < len(text):
+            c = text[i]
+
+            if c == '\\' and i + 1 < len(text):
+                result.append(c)
+                result.append(text[i + 1])
+                i += 2
+                continue
+
+            if c == '"':
+                next_char = text[i + 1] if i + 1 < len(text) else ''
+                if next_char in _JSON_STRUCTURAL or next_char == '':
+                    result.append('"')
+                    i += 1
+                    break
+                else:
+                    result.append('\\"')
+                    i += 1
+                    continue
+
+            result.append(c)
+            i += 1
+
+    return "".join(result)

@@ -177,3 +177,27 @@ class TestStage3RemoveTrailingCommas:
     def test_trailing_comma_with_whitespace(self) -> None:
         text = '{"a": 1 ,  \n}'
         assert relaxed_json_loads(text) == {"a": 1}
+
+
+class TestStage4EscapeInnerQuotes:
+    """Stage-4: 字符串值内未转义引号 → 转义。"""
+
+    def test_single_bare_quote(self) -> None:
+        text = '{"quote": "他说"yes"了"}'
+        result = relaxed_json_loads(text)
+        assert result == {"quote": '他说"yes"了'}
+
+    def test_multiple_bare_quotes(self) -> None:
+        text = '{"q": "他说"yes"和"no"了"}'
+        result = relaxed_json_loads(text)
+        assert result == {"q": '他说"yes"和"no"了'}
+
+    def test_already_escaped_quotes_unchanged(self) -> None:
+        text = r'{"q": "已转义\"引号\""}'
+        result = relaxed_json_loads(text)
+        assert result == {"q": '已转义"引号"'}
+
+    def test_bare_quote_in_array(self) -> None:
+        text = '["他说"yes"了"]'
+        result = relaxed_json_loads(text)
+        assert result == ['他说"yes"了']

@@ -124,3 +124,32 @@ class TestStage1StripEnvelope:
         result, report = relaxed_json_loads(text, return_repair_report=True)
         assert result == {"a": 1}
         assert "strip_envelope" in report.stages_applied
+
+
+class TestStage2NormalizeQuotes:
+    """Stage-2: 中文/全角引号 → 半角(仅语法位置)。"""
+
+    def test_chinese_double_quotes(self) -> None:
+        text = '{\u201ca\u201d: \u201c值\u201d, \u201cb\u201d: \u201c文本\u201d}'
+        result = relaxed_json_loads(text)
+        assert result == {"a": "值", "b": "文本"}
+
+    def test_chinese_single_quotes_in_syntax(self) -> None:
+        text = "{\u2018a\u2019: \u2018val\u2019}"
+        result = relaxed_json_loads(text)
+        assert result == {"a": "val"}
+
+    def test_fullwidth_comma(self) -> None:
+        text = '{"a": 1\uff0c "b": 2}'
+        result = relaxed_json_loads(text)
+        assert result == {"a": 1, "b": 2}
+
+    def test_chinese_quotes_inside_string_preserved(self) -> None:
+        text = '{"text": "他说\u201c你好\u201d"}'
+        result = relaxed_json_loads(text)
+        assert result["text"] == "他说\u201c你好\u201d"
+
+    def test_fullwidth_comma_inside_string_preserved(self) -> None:
+        text = '{"text": "A\uff0cB\uff0cC"}'
+        result = relaxed_json_loads(text)
+        assert result["text"] == "A\uff0cB\uff0cC"

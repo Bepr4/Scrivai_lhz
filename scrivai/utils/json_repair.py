@@ -189,8 +189,88 @@ def _remove_comments_outside_strings(text: str) -> str:
     return "".join(result)
 
 
+_OPEN_QUOTES = {"\u201c", "\u2018"}   # " '
+_CLOSE_QUOTES = {"\u201d", "\u2019"}  # " '
+_ALL_FANCY_QUOTES = _OPEN_QUOTES | _CLOSE_QUOTES
+_FULLWIDTH_COMMA = "\uff0c"  # ，
+
+# 对应关系：开引号 → 关引号
+_FANCY_QUOTE_PAIR: dict[str, str] = {
+    "\u201c": "\u201d",  # " → "
+    "\u2018": "\u2019",  # ' → '
+}
+
+
 def _normalize_quotes(text: str) -> str:
-    return text
+    """Stage-2: 语法位置的中文/全角引号 → 半角,全角逗号 → 半角。
+
+    状态机追踪字符串内/外,区分两种开启方式:
+    - 普通 `"` 开启: 只有 `"` 关闭,内部中文引号保留不动。
+    - 中文引号开启: 对应的配对关闭引号关闭,输出全部替换为 `"`。
+
+    全角逗号在字符串外替换为半角逗号。
+    """
+    result: list[str] = []
+    in_string = False
+    fancy_close: str | None = None  # 当前期望的中文关闭引号(None=由"开启)
+    i = 0
+
+    while i < len(text):
+        ch = text[i]
+
+        if in_string:
+            if fancy_close is None:
+                # 由普通 `"` 开启的字符串
+                if ch == "\\" and i + 1 < len(text):
+                    result.append(ch)
+                    result.append(text[i + 1])
+                    i += 2
+                    continue
+                if ch == '"':
+                    in_string = False
+                    result.append(ch)
+                    i += 1
+                    continue
+                # 中文引号在此保留原样
+                result.append(ch)
+                i += 1
+                continue
+            else:
+                # 由中文引号开启的字符串,等待对应关闭引号
+                if ch == fancy_close:
+                    in_string = False
+                    fancy_close = None
+                    result.append('"')
+                    i += 1
+                    continue
+                result.append(ch)
+                i += 1
+                continue
+
+        # 字符串外
+        if ch == '"':
+            in_string = True
+            fancy_close = None
+            result.append(ch)
+            i += 1
+            continue
+
+        if ch in _OPEN_QUOTES:
+            result.append('"')
+            in_string = True
+            fancy_close = _FANCY_QUOTE_PAIR[ch]
+            i += 1
+            continue
+
+        if ch == _FULLWIDTH_COMMA:
+            result.append(",")
+            i += 1
+            continue
+
+        result.append(ch)
+        i += 1
+
+    return "".join(result)
 
 
 def _remove_trailing_commas(text: str) -> str:

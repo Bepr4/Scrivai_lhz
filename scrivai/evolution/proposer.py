@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 from scrivai.evolution.budget import LLMCallBudget
@@ -97,10 +98,43 @@ def _build_prompt(
 """
 
 
+_RE_FENCE_SEARCH = re.compile(r"```(?:json)?\s*(.+?)\s*```", re.DOTALL)
+
+
+def _find_json_object(text: str) -> str | None:
+    """平衡括号扫描提取第一个完整 JSON 对象。"""
+    in_string = False
+    escape = False
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                return text[start : i + 1]
+    return None
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     """从 LLM 输出中提取 JSON 对象。
 
-    委托给 relaxed_json_loads 处理围栏剥离、引号归一、尾逗号等常见问题。
+    Evolution prompt 的 LLM 输出可能包含前缀文字或 Markdown 围栏。
+    先尝试提取纯 JSON 部分,再委托 relaxed_json_loads 做语法容错。
 
     参数:
         text: LLM 原始输出。
@@ -111,17 +145,29 @@ def _extract_json(text: str) -> dict[str, Any]:
     异常:
         ProposerError: 解析失败或结果不是 dict。
     """
-    try:
-        parsed = relaxed_json_loads(text)
-    except (json.JSONDecodeError, Exception) as e:
-        raise ProposerError(
-            f"JSON parse failed: {e}; snippet: {text[:300]}"
-        ) from e
-    if not isinstance(parsed, dict):
-        raise ProposerError(
-            f"expected JSON object, got {type(parsed).__name__}; snippet: {text[:300]}"
-        )
-    return parsed
+    stripped = text.strip()
+
+    # 候选文本:围栏内容 → 括号扫描 → 原文
+    candidates: list[str] = []
+    fence = _RE_FENCE_SEARCH.search(stripped)
+    if fence:
+        candidates.append(fence.group(1).strip())
+    obj_str = _find_json_object(stripped)
+    if obj_str is not None:
+        candidates.append(obj_str)
+    candidates.append(stripped)
+
+    for cand in candidates:
+        try:
+            parsed = relaxed_json_loads(cand)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, Exception):
+            pass
+
+    raise ProposerError(
+        f"JSON parse failed; snippet: {text[:300]}"
+    )
 
 
 class Proposer:

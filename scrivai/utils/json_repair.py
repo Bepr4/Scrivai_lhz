@@ -129,16 +129,59 @@ def relaxed_json_loads(
 
 # ── Stage 实现 ──
 
-_RE_FENCE = re.compile(r"^```(?:json|JSON)?\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
+_RE_FENCE = re.compile(r"```(?:json|JSON)?\s*\n(.*?)\n\s*```", re.DOTALL)
+
+
+def _find_json_object(text: str) -> str | None:
+    """平衡括号扫描提取第一个完整 JSON 对象或数组。
+
+    正确处理字符串内的 { / } / [ / ] 和转义序列。
+    """
+    in_string = False
+    escape = False
+    depth = 0
+    start = -1
+    open_ch = ""
+    close_ch = ""
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ("{", "["):
+            if depth == 0:
+                start = i
+                open_ch = ch
+                close_ch = "}" if ch == "{" else "]"
+            depth += 1
+        elif ch in ("}", "]"):
+            depth -= 1
+            if depth == 0 and start >= 0:
+                return text[start : i + 1]
+    return None
 
 
 def _strip_envelope(text: str) -> str:
-    """Stage-1: 去除前后空白、Markdown 围栏、行/块注释。"""
+    """Stage-1: 去除前后空白、Markdown 围栏、行/块注释、LLM 前缀文字。"""
     text = text.strip()
 
-    fence = _RE_FENCE.match(text)
+    # 1. 优先提取 Markdown 围栏内容（允许围栏前有文字）
+    fence = _RE_FENCE.search(text)
     if fence:
         text = fence.group(1).strip()
+    else:
+        # 2. 没有围栏时，尝试平衡扫描找到第一个完整 JSON 对象/数组
+        #    处理 LLM 前缀文字（如"好的，这是我的建议：{...}"）
+        obj = _find_json_object(text)
+        if obj is not None and obj != text.strip():
+            text = obj
 
     text = _remove_comments_outside_strings(text)
     return text

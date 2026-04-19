@@ -14,8 +14,6 @@ from scrivai.evolution.proposer import (
     Proposer,
     ProposerError,
     _extract_json,
-    _find_json_object,
-    _normalize_common_issues,
 )
 
 
@@ -93,21 +91,8 @@ def test_extract_json_with_trailing_comma():
 
 def test_extract_json_totally_invalid_raises():
     """完全没有 JSON 结构 → ProposerError。"""
-    with pytest.raises(ProposerError, match="no JSON object"):
+    with pytest.raises(ProposerError, match="JSON parse failed"):
         _extract_json("这只是自然语言回答,没有任何 JSON 格式。")
-
-
-def test_find_json_object_respects_string_escapes():
-    """平衡扫描必须正确处理字符串内的 \\" 转义。"""
-    raw = '{"k": "he said \\"hi\\" and {}"}'
-    assert _find_json_object(raw) == raw
-
-
-def test_normalize_common_issues_handles_both():
-    """同时含中文引号和尾逗号。"""
-    raw = '{\u201ckey\u201d: "value",}'
-    normalized = _normalize_common_issues(raw)
-    assert json.loads(normalized) == {"key": "value"}
 
 
 @pytest.mark.asyncio

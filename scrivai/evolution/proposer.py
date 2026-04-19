@@ -12,6 +12,7 @@ from typing import Any, Optional
 from scrivai.evolution.budget import LLMCallBudget
 from scrivai.models.evolution import EvolutionProposal, FailureSample
 from scrivai.pes.llm_client import LLMClient
+from scrivai.utils import relaxed_json_loads
 
 
 class ProposerError(RuntimeError):
@@ -97,18 +98,11 @@ def _build_prompt(
 """
 
 
+_RE_FENCE_SEARCH = re.compile(r"```(?:json)?\s*(.+?)\s*```", re.DOTALL)
+
+
 def _find_json_object(text: str) -> str | None:
-    """用平衡括号扫描找到第一个完整 JSON 对象。
-
-    关键:在字符串内部(含转义)的 `{` / `}` 不计入深度。
-    这能正确处理 proposal 中 new_content.SKILL.md 字符串包含 `{` / `}` 的情况。
-
-    参数:
-        text: 待扫描文本。
-
-    返回:
-        第一个完整 JSON 对象子串,或 None。
-    """
+    """平衡括号扫描提取第一个完整 JSON 对象。"""
     in_string = False
     escape = False
     depth = 0
@@ -136,30 +130,11 @@ def _find_json_object(text: str) -> str | None:
     return None
 
 
-def _normalize_common_issues(text: str) -> str:
-    """修复 GLM 常见非法输出:中文引号 + 尾随逗号。
-
-    参数:
-        text: 待正规化文本。
-
-    返回:
-        正规化后文本。
-    """
-    # 中文智能引号 → 英文引号(GLM 偶发)
-    text = text.replace("\u201c", '"').replace("\u201d", '"')
-    text = text.replace("\u2018", "'").replace("\u2019", "'")
-    # 对象/数组尾随逗号(GLM 偶发)
-    text = re.sub(r",(\s*[}\]])", r"\1", text)
-    return text
-
-
 def _extract_json(text: str) -> dict[str, Any]:
-    """多策略提取 JSON 对象。
+    """从 LLM 输出中提取 JSON 对象。
 
-    策略顺序(均失败则抛 ProposerError):
-      1. 去 markdown fence 后直接 json.loads
-      2. 平衡括号扫描提取第一个完整对象
-      3. 对策略 2 结果跑正规化后 retry
+    Evolution prompt 的 LLM 输出可能包含前缀文字或 Markdown 围栏。
+    先尝试提取纯 JSON 部分,再委托 relaxed_json_loads 做语法容错。
 
     参数:
         text: LLM 原始输出。
@@ -168,42 +143,29 @@ def _extract_json(text: str) -> dict[str, Any]:
         解析后 dict。
 
     异常:
-        ProposerError: 所有策略均无法解析。
+        ProposerError: 解析失败或结果不是 dict。
     """
     stripped = text.strip()
 
-    # Strategy 1: markdown fence + direct parse
-    fence_match = re.search(r"```(?:json)?\s*(.+?)\s*```", stripped, re.DOTALL)
-    candidate_texts: list[str] = []
-    if fence_match:
-        candidate_texts.append(fence_match.group(1).strip())
-    candidate_texts.append(stripped)
+    # 候选文本:围栏内容 → 括号扫描 → 原文
+    candidates: list[str] = []
+    fence = _RE_FENCE_SEARCH.search(stripped)
+    if fence:
+        candidates.append(fence.group(1).strip())
+    obj_str = _find_json_object(stripped)
+    if obj_str is not None:
+        candidates.append(obj_str)
+    candidates.append(stripped)
 
-    for cand in candidate_texts:
+    for cand in candidates:
         try:
-            parsed = json.loads(cand)
+            parsed = relaxed_json_loads(cand)
             if isinstance(parsed, dict):
                 return parsed
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, Exception):
             pass
 
-    # Strategy 2: balanced-brace extraction
-    obj_str = _find_json_object(stripped)
-    if obj_str is None:
-        raise ProposerError(f"no JSON object found in LLM response: {text[:300]}")
-    try:
-        return json.loads(obj_str)
-    except json.JSONDecodeError:
-        pass
-
-    # Strategy 3: normalize + retry
-    normalized = _normalize_common_issues(obj_str)
-    try:
-        return json.loads(normalized)
-    except json.JSONDecodeError as e:
-        raise ProposerError(
-            f"JSON parse failed after normalization: {e}; snippet: {obj_str[:300]}"
-        ) from e
+    raise ProposerError(f"JSON parse failed; snippet: {text[:300]}")
 
 
 class Proposer:
@@ -243,9 +205,14 @@ class Proposer:
         for attempt in (0, 1):  # 最多 2 次(首发 + 1 次重试)
             if budget is not None:
                 budget.consume(1)  # Budget 不因重试豁免
-            prompt = base_prompt if attempt == 0 else base_prompt + (
-                "\n\n[严格化提示]你上次输出无法解析,请严格按上面的 JSON 模板返回,"
-                "不要附加任何说明文字,不要用 markdown 代码块包裹。"
+            prompt = (
+                base_prompt
+                if attempt == 0
+                else base_prompt
+                + (
+                    "\n\n[严格化提示]你上次输出无法解析,请严格按上面的 JSON 模板返回,"
+                    "不要附加任何说明文字,不要用 markdown 代码块包裹。"
+                )
             )
             raw = await self.llm_client.simple_query(prompt, model=self.model)
             try:
@@ -275,6 +242,4 @@ class Proposer:
                 return out
             last_error = ProposerError(f"0 valid proposals in LLM response: {parsed}")
 
-        raise ProposerError(
-            f"proposer failed after 2 attempts: {last_error}"
-        )
+        raise ProposerError(f"proposer failed after 2 attempts: {last_error}")

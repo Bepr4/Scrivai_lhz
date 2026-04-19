@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import timeit
 
 import pytest
 
@@ -201,3 +202,60 @@ class TestStage4EscapeInnerQuotes:
         text = '["他说"yes"了"]'
         result = relaxed_json_loads(text)
         assert result == ['他说"yes"了']
+
+
+class TestCombinedCases:
+    """多阶段组合修复。"""
+
+    def test_ticket_case8_combined(self) -> None:
+        """工单用例 8: 尾逗号 + 中文引号 + 裸引号组合。"""
+        text = '{\u201cname\u201d: \u201c张三\u201d, \u201cquote\u201d: \u201c他说"yes"了\u201d,}'
+        result = relaxed_json_loads(text)
+        assert result["name"] == "张三"
+        assert result["quote"] == '他说"yes"了'
+
+    def test_fence_plus_trailing_comma(self) -> None:
+        text = '```json\n{"a": 1, "b": 2,}\n```'
+        assert relaxed_json_loads(text) == {"a": 1, "b": 2}
+
+    def test_fence_plus_chinese_quotes(self) -> None:
+        text = '```json\n{\u201ca\u201d: 1}\n```'
+        assert relaxed_json_loads(text) == {"a": 1}
+
+    def test_comments_plus_trailing_comma(self) -> None:
+        text = '{\n  "a": 1, // comment\n  "b": 2,\n}'
+        assert relaxed_json_loads(text) == {"a": 1, "b": 2}
+
+
+class TestErrorHandling:
+    """全部失败时的异常行为。"""
+
+    def test_unfixable_raises_repair_error(self) -> None:
+        with pytest.raises(ScrivaiJSONRepairError) as exc_info:
+            relaxed_json_loads("{totally broken json content")
+        err = exc_info.value
+        assert err.original_text == "{totally broken json content"
+        assert len(err.stages_applied) == 4
+        assert isinstance(err, ScrivaiError)
+        assert isinstance(err, json.JSONDecodeError)
+
+    def test_non_json_start_fails(self) -> None:
+        with pytest.raises((json.JSONDecodeError, ScrivaiJSONRepairError)):
+            relaxed_json_loads("hello world")
+
+    def test_error_message_contains_stages(self) -> None:
+        with pytest.raises(ScrivaiJSONRepairError) as exc_info:
+            relaxed_json_loads("{bad")
+        assert "strip_envelope" in str(exc_info.value)
+
+
+class TestPerformance:
+    """Stage-0 快路径性能约束。"""
+
+    def test_stage0_overhead_under_5_percent(self) -> None:
+        valid_json = json.dumps({"key_" + str(i): i for i in range(100)})
+        n = 10000
+        baseline = timeit.timeit(lambda: json.loads(valid_json), number=n)
+        relaxed = timeit.timeit(lambda: relaxed_json_loads(valid_json), number=n)
+        overhead = (relaxed - baseline) / baseline
+        assert overhead < 0.05, f"Stage-0 开销 {overhead:.1%} 超过 5%"

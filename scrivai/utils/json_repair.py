@@ -274,6 +274,40 @@ def _normalize_quotes(text: str) -> str:
 
 
 def _remove_trailing_commas(text: str) -> str:
+    """Stage-3: 删除对象/数组最后一个元素后的多余逗号。
+
+    状态机跳过字符串内容,仅对语法位置的 ,\\s*[}\\]] 模式执行删除。
+    """
+    string_ranges: list[tuple[int, int]] = []
+    in_string = False
+    start = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == "\\" and i + 1 < len(text):
+                i += 2
+                continue
+            if ch == '"':
+                string_ranges.append((start, i))
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+                start = i
+        i += 1
+
+    def _in_string(pos: int) -> bool:
+        for s, e in string_ranges:
+            if s <= pos <= e:
+                return True
+        return False
+
+    trailing = list(re.finditer(r",(\s*[}\]])", text))
+    for m in reversed(trailing):
+        if not _in_string(m.start()):
+            text = text[: m.start()] + m.group(1) + text[m.end() :]
+
     return text
 
 

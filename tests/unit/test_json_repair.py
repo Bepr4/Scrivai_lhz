@@ -153,3 +153,27 @@ class TestStage2NormalizeQuotes:
         text = '{"text": "A\uff0cB\uff0cC"}'
         result = relaxed_json_loads(text)
         assert result["text"] == "A\uff0cB\uff0cC"
+
+
+class TestStage3RemoveTrailingCommas:
+    """Stage-3: 删除对象/数组尾逗号。"""
+
+    def test_object_trailing_comma(self) -> None:
+        assert relaxed_json_loads('{"a": 1, "b": 2,}') == {"a": 1, "b": 2}
+
+    def test_array_trailing_comma(self) -> None:
+        assert relaxed_json_loads('[1, 2, 3,]') == [1, 2, 3]
+
+    def test_nested_trailing_commas(self) -> None:
+        assert relaxed_json_loads('{"a": [1, 2,], "b": {"c": 3,},}') == {
+            "a": [1, 2],
+            "b": {"c": 3},
+        }
+
+    def test_comma_inside_string_preserved(self) -> None:
+        result = relaxed_json_loads('{"a": "含,逗号的值,",}')
+        assert result == {"a": "含,逗号的值,"}
+
+    def test_trailing_comma_with_whitespace(self) -> None:
+        text = '{"a": 1 ,  \n}'
+        assert relaxed_json_loads(text) == {"a": 1}

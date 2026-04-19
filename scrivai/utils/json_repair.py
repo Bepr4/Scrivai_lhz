@@ -127,11 +127,66 @@ def relaxed_json_loads(
     )
 
 
-# ── Stage 实现(占位,返回原文不修改) ──
+# ── Stage 实现 ──
+
+_RE_FENCE = re.compile(r"^```(?:json|JSON)?\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
 
 
 def _strip_envelope(text: str) -> str:
+    """Stage-1: 去除前后空白、Markdown 围栏、行/块注释。"""
+    text = text.strip()
+
+    fence = _RE_FENCE.match(text)
+    if fence:
+        text = fence.group(1).strip()
+
+    text = _remove_comments_outside_strings(text)
     return text
+
+
+def _remove_comments_outside_strings(text: str) -> str:
+    """去除 JSON 语法位置的 // 行注释和 /* */ 块注释,保留字符串内容不变。"""
+    result: list[str] = []
+    i = 0
+    in_string = False
+    while i < len(text):
+        ch = text[i]
+
+        if in_string:
+            result.append(ch)
+            if ch == "\\" and i + 1 < len(text):
+                result.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            result.append(ch)
+            i += 1
+            continue
+
+        if ch == "/" and i + 1 < len(text) and text[i + 1] == "/":
+            end = text.find("\n", i)
+            if end == -1:
+                break
+            i = end
+            continue
+
+        if ch == "/" and i + 1 < len(text) and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            if end == -1:
+                break
+            i = end + 2
+            continue
+
+        result.append(ch)
+        i += 1
+
+    return "".join(result)
 
 
 def _normalize_quotes(text: str) -> str:

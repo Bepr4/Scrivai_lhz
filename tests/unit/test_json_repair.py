@@ -90,3 +90,37 @@ class TestRelaxedJsonLoadsStage0:
         assert report.stages_applied == []
         assert report.original == '{"a": 1}'
         assert report.final == '{"a": 1}'
+
+
+class TestStage1StripEnvelope:
+    """Stage-1: 剥壳(围栏 / 注释 / 空白)。"""
+
+    def test_markdown_fence_json(self) -> None:
+        text = '```json\n{"a": 1}\n```'
+        assert relaxed_json_loads(text) == {"a": 1}
+
+    def test_markdown_fence_no_lang(self) -> None:
+        text = '```\n{"a": 1}\n```'
+        assert relaxed_json_loads(text) == {"a": 1}
+
+    def test_markdown_fence_with_whitespace(self) -> None:
+        text = '  \n```json\n{"a": 1}\n```\n  '
+        assert relaxed_json_loads(text) == {"a": 1}
+
+    def test_line_comment(self) -> None:
+        text = '{\n  "a": 1, // this is a comment\n  "b": 2\n}'
+        assert relaxed_json_loads(text) == {"a": 1, "b": 2}
+
+    def test_block_comment(self) -> None:
+        text = '{\n  /* comment */\n  "a": 1\n}'
+        assert relaxed_json_loads(text) == {"a": 1}
+
+    def test_line_comment_inside_string_preserved(self) -> None:
+        text = '{"url": "https://example.com"}'
+        assert relaxed_json_loads(text) == {"url": "https://example.com"}
+
+    def test_fence_with_report(self) -> None:
+        text = '```json\n{"a": 1}\n```'
+        result, report = relaxed_json_loads(text, return_repair_report=True)
+        assert result == {"a": 1}
+        assert "strip_envelope" in report.stages_applied

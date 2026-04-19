@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from scrivai.pes.llm_client import LLMClient
 
 from scrivai.exceptions import PhaseError, _SDKError
+from scrivai.utils import relaxed_json_loads
 from scrivai.models.pes import (
     CancelHookContext,
     FailureHookContext,
@@ -513,12 +514,12 @@ class BasePES:
         if phase == "execute":
             plan_json = working / "plan.json"
             if plan_json.exists():
-                return json.loads(plan_json.read_text(encoding="utf-8"))
+                return relaxed_json_loads(plan_json.read_text(encoding="utf-8"), strict=self.config.strict_json)
         elif phase == "summarize":
             findings = working / "findings"
             if findings.is_dir():
                 return {
-                    f.name: json.loads(f.read_text(encoding="utf-8"))
+                    f.name: relaxed_json_loads(f.read_text(encoding="utf-8"), strict=self.config.strict_json)
                     for f in sorted(findings.glob("*.json"))
                 }
         return None
